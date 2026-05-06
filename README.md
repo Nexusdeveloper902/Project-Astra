@@ -33,3 +33,49 @@ The user interface layer.
 * Provides a keyboard-first, ephemeral overlay for user interaction.
 * Visualizes tool execution status and memory retrievals.
 * Centered, floating interface managed by Hyprland-specific window rules.
+
+## Installation and Setup
+
+### Prerequisites
+* **LLM Backend**: `llama.cpp` server running locally (recommended port: 8080).
+* **Rust**: Required for Astra Core and HUD.
+* **Python 3.12+**: Required for the Orchestrator.
+* **Node.js / npm**: Required for building the HUD.
+
+### 1. LLM Model Hosting
+Astra is optimized for Qwen 2.5 14B or similar models.
+```bash
+# Run with ROCm/CUDA acceleration and ChatML support
+llama-server -m /path/to/model.gguf -ngl 99 -c 4096 --port 8080
+```
+
+### 2. Orchestrator Setup
+```bash
+cd orchestrator
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Astra Core
+```bash
+cd core
+cargo build --release
+```
+
+### 4. HUD UI
+```bash
+cd hud
+npm install
+npm run tauri build
+```
+
+## Usage
+
+### Invocation
+The system is designed to be triggered via a global hotkey.
+* **Default Hotkey**: `Super + Space` (configured in Hyprland).
+* **Toggle Script**: `~/.local/bin/astra-toggle` handles the synchronized startup of all subsystems.
+
+### Interaction Protocol
+Astra uses the **ChatML** format for all internal reasoning. Users can provide natural language commands which are then decomposed into tool calls or conversational responses.
