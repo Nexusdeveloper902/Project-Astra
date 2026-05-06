@@ -79,3 +79,24 @@ The system is designed to be triggered via a global hotkey.
 
 ### Interaction Protocol
 Astra uses the **ChatML** format for all internal reasoning. Users can provide natural language commands which are then decomposed into tool calls or conversational responses.
+
+## Technical Implementation
+
+### IPC and Event Bus
+Communication between subsystems is handled via a JSON-RPC based event bus over a Unix Domain Socket (`/tmp/astra.sock`).
+
+* **Request/Response**: Synchronous tool calls and UI updates.
+* **Event Broadcasting**: Asynchronous notification of state changes (e.g., `tool.completed`, `context.updated`).
+
+### Agentic Loop (Reasoning Engine)
+The Orchestrator implements a persistent, stateful agent loop:
+1. **Context Capture**: Injects PWD, HOME, USER, and recent conversation history.
+2. **RAG Retrieval**: Performs semantic search on the Obsidian vault for relevant facts.
+3. **Reasoning Step**: LLM generates natural language reasoning and optional tool calls.
+4. **Tool Execution**: Core executes tools and broadcasts results.
+5. **Re-entrance**: Orchestrator feeds tool results back into the loop for the next reasoning step.
+
+### Safety and Security
+* **Confirmation Policy**: Explicit user consent is required for all system-modifying actions (rm, mkdir, etc.).
+* **Permission Scoping**: Tools are restricted to specific capability sets defined in the Core.
+* **Local Data**: All memory and logs are stored in plain-text (Markdown) or local SQLite databases.
