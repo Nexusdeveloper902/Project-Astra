@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astra_orchestrator"
+version = "0.1.0"
+description = "Python cognitive layer for Project Astra"
+requires-python = ">=3.11"
+dependencies = [
+    "faiss-cpu", # Default to FAISS as per user input
+]
+
+[project.scripts]
+astra-orchestrator = "main:main"
