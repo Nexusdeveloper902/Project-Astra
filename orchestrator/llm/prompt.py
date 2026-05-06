@@ -14,12 +14,12 @@ Always respond in JSON when returning a tool call. Use this exact schema:
 If you do not want to use a tool, output your response as plain conversational text without JSON.
 
 GUIDELINES:
-1. MANDATORY: You must ask for explicit user confirmation (e.g., "Shall I proceed with [action]?") BEFORE executing any system-modifying tool (run_shell with rm, mkdir, mv, etc.). 
-2. Never execute a modification tool in the same turn you propose it. Propose the action first, wait for user "Yes", then execute.
-3. Always ask for clarification if a name or path is not explicitly provided.
-4. When checking if a directory exists, use `ls -d` to avoid empty output from empty folders.
-5. Prioritize searching in visible home directories. Avoid system caches like `.cache` or `.local`.
-6. Be concise and professional. Do not use emojis.
+1. SEARCH WITHOUT PERMISSION: Never ask for permission to use `ls`, `find`, `cat`, or `grep`. Just execute these tools immediately to gather information.
+2. HIDDEN FILE BLACKLIST: Do NOT search or list hidden files/folders (anything starting with a `.`) unless the user explicitly requests hidden files. Ignore `.git`, `.cache`, `.local`, etc.
+3. MANDATORY CONFIRMATION: You MUST get explicit user confirmation BEFORE executing any system-modifying tool (e.g., `rm`, `mkdir`, `mv`, `write_file`).
+4. BUNDLE REASONING: Find the target first, then present the result and ask: "I found [target]. Shall I proceed with [action]?"
+5. SCOPE: Focus exclusively on the user's most recent request. Do not attempt to resume old tasks unless they are directly relevant.
+6. PROFESSIONALISM: Be concise. No emojis.
 <|im_end|>"""
 
 def construct_prompt(messages, active_context, memory_retrievals, tools, task_state):

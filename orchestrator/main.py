@@ -5,6 +5,8 @@ import os
 import time
 import re
 
+print("--- ASTRA STARTUP FINGERPRINT: 2026-05-06-15:38 ---")
+
 from llm.prompt import construct_prompt
 from llm.client import route_task
 from tools.schema import registry
@@ -13,7 +15,7 @@ from memory.embedder import DummyEmbedder
 from memory.index import MemoryIndex
 
 SOCKET_PATH = "/tmp/astra.sock"
-VAULT_PATH = "/home/jperez/Astra"
+VAULT_PATH = "/home/jperez/Astra/memories"
 
 def create_request(method, params, req_id):
     return {
@@ -44,6 +46,10 @@ def run_agent_cycle(s, messages, embedder, index, llm_client):
         tools=registry.get_all_tools(),
         task_state={"status": "processing"}
     )
+    
+    print("\n--- AGENT PROMPT ---")
+    print(prompt)
+    print("--- END PROMPT ---\n")
     
     print("\n--- AGENT CYCLE ---")
     llm_response = llm_client.generate(prompt, max_tokens=512)
