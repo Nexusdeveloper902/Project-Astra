@@ -1,102 +1,153 @@
 # Project Astra
 
-Project Astra is a local-first, tool-augmented AI assistant designed as a lightweight personal operating layer for Linux systems. It provides a unified, context-aware interface for system automation, knowledge management, and persistent reasoning.
+Project Astra is a local-first AI assistant for Linux. It combines a Rust event
+runtime, a Python orchestration layer, and a Tauri/React HUD into a single
+tool-augmented assistant that can reason over local context, retrieve memory,
+request tools, and report results through a lightweight desktop overlay.
 
-Unlike traditional chatbots, Astra is a modular cognitive system that combines memory, reasoning, tool execution, and state management into a single unified assistant layer.
+The project is built around a simple boundary: the language model proposes
+actions, while the runtime validates and executes them through explicit events
+and tool contracts.
 
-## Core Design Philosophy
+## Repository Layout
 
-* **Minimal Friction**: Single global hotkey invocation (Super+Space) via an ephemeral overlay HUD.
-* **Tool-First Intelligence**: All capabilities are exposed as structured tools, with the model deciding when to act versus respond.
-* **Local-First Architecture**: Runs primarily on local hardware with support for high-performance GGUF models via llama.cpp.
-* **Memory-Centric**: Long-term memory is managed via a vector-indexed Obsidian vault (RAG).
-
-## System Architecture
-
-Astra is composed of three primary layers communicating via a high-speed Unix Domain Socket event bus.
-
-### 1. Astra Core (Rust)
-The system runtime and security layer.
-* Handles IPC communication via `/tmp/astra.sock`.
-* Manages the global event bus and subsystem subscriptions.
-* Executes system-level tools (shell, file I/O) with enforced safety boundaries.
-
-### 2. Astra Orchestrator (Python)
-The reasoning and agentic engine.
-* Implements a stateful agentic loop with conversation history.
-* Manages Retrieval-Augmented Generation (RAG) using FAISS and local embeddings.
-* Orchestrates multi-step reasoning and command chaining.
-* Communicates with LLM backends via OpenAI-compatible HTTP APIs.
-
-### 3. Astra HUD (Tauri / React)
-The user interface layer.
-* Provides a keyboard-first, ephemeral overlay for user interaction.
-* Visualizes tool execution status and memory retrievals.
-* Centered, floating interface managed by Hyprland-specific window rules.
-
-## Installation and Setup
-
-### Prerequisites
-* **LLM Backend**: `llama.cpp` server running locally (recommended port: 8080).
-* **Rust**: Required for Astra Core and HUD.
-* **Python 3.12+**: Required for the Orchestrator.
-* **Node.js / npm**: Required for building the HUD.
-
-### 1. LLM Model Hosting
-Astra is optimized for Qwen 2.5 14B or similar models.
-```bash
-# Run with ROCm/CUDA acceleration and ChatML support
-llama-server -m /path/to/model.gguf -ngl 99 -c 4096 --port 8080
+```text
+core/          Rust runtime, IPC server, reducer, event log, and tool runner
+orchestrator/  Python agent loop, prompt construction, memory retrieval, LLM client
+hud/           Tauri and React desktop overlay
+tests/         Python unit and E2E-oriented test suites
+memories/      Local markdown memory vault placeholder
 ```
 
-### 2. Orchestrator Setup
+## Architecture
+
+Project Astra has three primary layers:
+
+1. Astra Core (`core/`)
+   - Runs the Unix socket IPC server at `/tmp/astra.sock`.
+   - Records events to SQLite.
+   - Broadcasts events to connected clients.
+   - Executes approved tools such as shell commands and memory writes.
+   - Maintains deterministic state through the reducer.
+
+2. Astra Orchestrator (`orchestrator/`)
+   - Builds the system prompt from tools, context, memory, task state, and chat
+     history.
+   - Retrieves relevant memory chunks from the markdown vault.
+   - Calls an OpenAI-compatible local LLM endpoint.
+   - Converts model output into user-visible text and structured tool requests.
+
+3. Astra HUD (`hud/`)
+   - Provides the desktop interaction surface.
+   - Sends user input to the core over IPC.
+   - Displays assistant output and tool execution status.
+   - Uses Tauri, React, Vite, and Rust.
+
+## Runtime Requirements
+
+- Linux, with Hyprland support used by the current desktop workflow.
+- Rust and Cargo for the core runtime and Tauri shell.
+- Python 3.11 or newer for the orchestrator.
+- Node.js and npm for the HUD.
+- A local OpenAI-compatible LLM server, such as `llama.cpp`, listening on
+  `http://localhost:8080/v1`.
+
+## Setup
+
+### Core
+
+```bash
+cd core
+cargo build
+```
+
+### Orchestrator
+
 ```bash
 cd orchestrator
 python -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
-### 3. Astra Core
-```bash
-cd core
-cargo build --release
+The orchestrator currently expects the local memory vault at:
+
+```text
+/home/jperez/Astra/memories
 ```
 
-### 4. HUD UI
+### HUD
+
 ```bash
 cd hud
 npm install
-npm run tauri build
+npm run build
 ```
 
-## Usage
+For Tauri development:
 
-### Invocation
-The system is designed to be triggered via a global hotkey.
-* **Default Hotkey**: `Super + Space` (configured in Hyprland).
-* **Toggle Script**: `~/.local/bin/astra-toggle` handles the synchronized startup of all subsystems.
+```bash
+npm run tauri dev
+```
 
-### Interaction Protocol
-Astra uses the **ChatML** format for all internal reasoning. Users can provide natural language commands which are then decomposed into tool calls or conversational responses.
+## Local LLM
 
-## Technical Implementation
+Astra expects an OpenAI-compatible completions endpoint. A typical local server
+can be started with `llama.cpp`:
 
-### IPC and Event Bus
-Communication between subsystems is handled via a JSON-RPC based event bus over a Unix Domain Socket (`/tmp/astra.sock`).
+```bash
+llama-server -m /path/to/model.gguf -ngl 99 -c 4096 --port 8080
+```
 
-* **Request/Response**: Synchronous tool calls and UI updates.
-* **Event Broadcasting**: Asynchronous notification of state changes (e.g., `tool.completed`, `context.updated`).
+The default Python client sends requests to:
 
-### Agentic Loop (Reasoning Engine)
-The Orchestrator implements a persistent, stateful agent loop:
-1. **Context Capture**: Injects PWD, HOME, USER, and recent conversation history.
-2. **RAG Retrieval**: Performs semantic search on the Obsidian vault for relevant facts.
-3. **Reasoning Step**: LLM generates natural language reasoning and optional tool calls.
-4. **Tool Execution**: Core executes tools and broadcasts results.
-5. **Re-entrance**: Orchestrator feeds tool results back into the loop for the next reasoning step.
+```text
+http://localhost:8080/v1/completions
+```
 
-### Safety and Security
-* **Confirmation Policy**: Explicit user consent is required for all system-modifying actions (rm, mkdir, etc.).
-* **Permission Scoping**: Tools are restricted to specific capability sets defined in the Core.
-* **Local Data**: All memory and logs are stored in plain-text (Markdown) or local SQLite databases.
+## Testing
+
+Run the Python unit tests:
+
+```bash
+python -m unittest tests.test_memory_components tests.test_prompt_schema_client tests.test_agent_cycle
+```
+
+Run the Rust core tests:
+
+```bash
+cd core
+cargo test
+```
+
+The E2E tests under `tests/test_search_resilience.py` require a running Astra
+IPC socket and live agent runtime.
+
+## Safety Model
+
+Astra treats the LLM as an untrusted planner. The model may suggest tool calls,
+but execution is routed through the core runtime and represented as events.
+System-modifying actions are expected to require explicit user confirmation and
+verification before reporting success.
+
+Important safety rules include:
+
+- Do not execute destructive actions without user approval.
+- Verify modifying actions with a follow-up observation.
+- Keep hidden files and directories out of normal search flows unless requested.
+- Preserve local-first behavior and avoid unnecessary network dependencies.
+
+## Documentation
+
+- [Astra.md](Astra.md) contains the expanded system design document.
+- [Project_Astra_Complete_Consolidated_Spec.docx.md](Project_Astra_Complete_Consolidated_Spec.docx.md)
+  contains the consolidated technical specification.
+- [hud/README.md](hud/README.md) documents the desktop HUD package.
+
+## Development Notes
+
+- Generated bytecode, virtual environments, dependency folders, and build output
+  should not be committed.
+- The core is the authority for event ordering and state transitions.
+- The orchestrator should remain easy to test without a live model by mocking
+  HTTP, memory, and socket boundaries.

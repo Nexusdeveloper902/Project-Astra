@@ -63,10 +63,14 @@ def run_agent_cycle(s, messages, embedder, index, llm_client):
         if json_match:
             try:
                 json_str = json_match.group(0)
+                # Sanitize invalid escape sequences common in LLM bash commands
+                json_str = json_str.replace(r'\(', r'\\(').replace(r'\*', r'\\*').replace(r'\)', r'\\)')
                 parsed_json = json.loads(json_str)
                 if "tool_name" in parsed_json and "args" in parsed_json:
                     parsed_tool = {"name": parsed_json["tool_name"], "args": parsed_json["args"]}
-            except: pass
+            except Exception as e:
+                print(f"DEBUG JSON Parse Error: {e}")
+                pass
 
         text_response = re.sub(r'\{.*\}', '', llm_response, flags=re.DOTALL).strip()
         clean_text = "\n".join([line for line in text_response.splitlines() if not line.strip().startswith(">")])
@@ -76,7 +80,11 @@ def run_agent_cycle(s, messages, embedder, index, llm_client):
             s.sendall((json.dumps(res) + "\n").encode('utf-8'))
 
         if parsed_tool:
-            status_msg = create_request("ui.output", {"text": f"[Action: {parsed_tool['name']}]"}, f"st_{int(time.time())}")
+            # Construct a descriptive status message with arguments
+            args_str = json.dumps(parsed_tool['args'])
+            status_text = f"[Executing: {parsed_tool['name']} {args_str}]"
+            
+            status_msg = create_request("ui.output", {"text": status_text}, f"st_{int(time.time())}")
             s.sendall((json.dumps(status_msg) + "\n").encode('utf-8'))
             
             req = create_request("tool.requested", {
@@ -125,11 +133,14 @@ def main():
                 
                 for line in lines:
                     if not line.strip(): continue
+                    print(f"DEBUG: Received raw line: {line}")
                     event = json.loads(line)
                     
                     if event.get("event") == "ui.input":
                         user_text = event["data"]["text"]
                         messages.append({"role": "user", "content": user_text})
+                        # Prune history if too long (keep last 20)
+                        if len(messages) > 20: messages = messages[-20:]
                         run_agent_cycle(s, messages, embedder, index, llm_client)
                         
                     elif event.get("event") == "tool.completed":
@@ -138,11 +149,13 @@ def main():
                         if len(summary) > 500: summary = summary[:500] + "... [truncated]"
                         
                         messages.append({"role": "system", "content": f"Tool result: {summary}"})
+                        if len(messages) > 20: messages = messages[-20:]
                         run_agent_cycle(s, messages, embedder, index, llm_client)
 
                     elif event.get("event") == "tool.failed":
                         err = event["data"]["error"]
                         messages.append({"role": "system", "content": f"Tool failed: {err}"})
+                        if len(messages) > 20: messages = messages[-20:]
                         run_agent_cycle(s, messages, embedder, index, llm_client)
 
         except Exception as e:

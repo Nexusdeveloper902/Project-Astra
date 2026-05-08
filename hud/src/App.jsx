@@ -47,7 +47,15 @@ function App() {
         />
         <div className="status">{status}</div>
       </form>
-      {response && <div className="response-box">{response}</div>}
+      {response && (
+        <div className="response-box">
+          {response.startsWith("[Executing:") ? (
+            <div className="action-tag">{response}</div>
+          ) : (
+            <div>{response}</div>
+          )}
+        </div>
+      )}
     </main>
   );
 }

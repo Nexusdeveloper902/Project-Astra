@@ -1,85 +1,85 @@
-# **Project Astra**
+# Project Astra
 
-*Final Consolidated System Design and Technical Specification (v0.1)*
+Final Consolidated System Design and Technical Specification, v0.1.
 
 This document consolidates the full revised Astra architecture, runtime contracts, security model, execution semantics, and implementation stack into one coherent master specification. It is intended to be the build-level reference for a local-first AI assistant kernel on Linux.
 
-# **1\. Purpose and Scope**
+# 1. Purpose and Scope
 
 Project Astra is a local, tool-augmented AI assistant designed to function as a lightweight personal operating layer over a Linux system. Its purpose is to provide fast, context-aware interactions; automate tasks; manage knowledge; and act as a unified interface between the user and their environment.
 
 Astra is not a chatbot. It is a modular cognitive system combining memory, reasoning, tool execution, context awareness, and explicit state management into a single assistant layer.
 
-* Local-first and Linux-first by design.  
-* Tool execution is first-class, not optional.  
-* All important state changes are event-driven and replayable.  
+* Local-first and Linux-first by design.
+* Tool execution is first-class, not optional.
+* All important state changes are event-driven and replayable.
 * The LLM proposes actions; the runtime validates and executes them.
 
-# **2\. Core Design Philosophy**
+# 2. Core Design Philosophy
 
-## **2.1 Minimal Friction Interaction**
+## 2.1 Minimal Friction Interaction
 
-* Single global hotkey invocation.  
-* Ephemeral overlay UI instead of full app switching.  
+* Single global hotkey invocation.
+* Ephemeral overlay UI instead of full app switching.
 * Automatic intent inference with no manual mode selection.
 
-## **2.2 Tool-First Intelligence**
+## 2.2 Tool-First Intelligence
 
-* All capabilities are exposed as tools.  
-* The model decides when to act versus respond.  
+* All capabilities are exposed as tools.
+* The model decides when to act versus respond.
 * Execution is treated as a first-class capability.
 
-## **2.3 Local-First Architecture**
+## 2.3 Local-First Architecture
 
-* Runs primarily on local hardware.  
-* Offline-capable core system.  
+* Runs primarily on local hardware.
+* Offline-capable core system.
 * External APIs are optional modules, not dependencies.
 
-## **2.4 Memory as a First-Class System**
+## 2.4 Memory as a First-Class System
 
-* Long-term memory stored in an Obsidian vault.  
-* Retrieval-Augmented Generation (RAG) for context injection.  
+* Long-term memory stored in an Obsidian vault.
+* Retrieval-Augmented Generation (RAG) for context injection.
 * Automatic capture of useful knowledge with provenance.
 
-# **3\. High-Level Architecture**
+# 3. High-Level Architecture
 
 Astra is composed of layered subsystems that communicate through explicit contracts.
 
-## **3.1 Interaction Layer**
+## 3.1 Interaction Layer
 
-* Global hotkey trigger.  
-* Ephemeral overlay (Astra HUD).  
-* Text input and optional voice input.  
+* Global hotkey trigger.
+* Ephemeral overlay (Astra HUD).
+* Text input and optional voice input.
 * Context injection from clipboard, selection, and active application.
 
-## **3.2 Intent Processing Layer**
+## 3.2 Intent Processing Layer
 
-* Classifies input into conversational response, tool execution, memory operation, or multi-step task planning.  
+* Classifies input into conversational response, tool execution, memory operation, or multi-step task planning.
 * Produces structured intent objects.
 
-## **3.3 Core Reasoning Engine**
+## 3.3 Core Reasoning Engine
 
-* Local LLM routed by task type and complexity.  
-* Handles planning, decomposition, and reasoning.  
+* Local LLM routed by task type and complexity.
+* Handles planning, decomposition, and reasoning.
 * Selects appropriate tools and memory.
 
-## **3.4 Tool Execution Layer (Astra Runtime)**
+## 3.4 Tool Execution Layer (Astra Runtime)
 
-* Executes system actions and subprocesses.  
-* Interfaces with the Linux system and Hyprland.  
+* Executes system actions and subprocesses.
+* Interfaces with the Linux system and Hyprland.
 * Enforces permissions, capability checks, and sandboxing.
 
-## **3.5 Memory System (Astra Vault)**
+## 3.5 Memory System (Astra Vault)
 
-* Obsidian-based structured knowledge base.  
-* Vector index for semantic retrieval.  
+* Obsidian-based structured knowledge base.
+* Vector index for semantic retrieval.
 * Automatic ingestion pipeline with ranking and conflict handling.
 
-## **3.6 Context Awareness Layer**
+## 3.6 Context Awareness Layer
 
-* Active window tracking.  
-* Clipboard monitoring.  
-* Selection capture.  
+* Active window tracking.
+* Clipboard monitoring.
+* Selection capture.
 * Project-aware context injection.
 
 # **4\. Core Execution Pipeline**

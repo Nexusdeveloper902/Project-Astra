@@ -22,3 +22,40 @@ impl CapabilityToken {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token() -> CapabilityToken {
+        CapabilityToken {
+            token_id: "token-1".to_string(),
+            task_id: "task-1".to_string(),
+            tool: "run_shell".to_string(),
+            capabilities: vec!["read".to_string()],
+            issued_at: 10,
+            expires_at: 20,
+            origin: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn token_is_valid_for_matching_tool_before_expiration() {
+        assert!(token().is_valid(15, "run_shell"));
+    }
+
+    #[test]
+    fn token_is_valid_at_exact_expiration_time() {
+        assert!(token().is_valid(20, "run_shell"));
+    }
+
+    #[test]
+    fn token_is_invalid_after_expiration() {
+        assert!(!token().is_valid(21, "run_shell"));
+    }
+
+    #[test]
+    fn token_is_invalid_for_different_tool() {
+        assert!(!token().is_valid(15, "save_memory"));
+    }
+}

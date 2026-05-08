@@ -30,3 +30,29 @@ impl SystemState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_state_starts_idle_with_empty_collections() {
+        let state = SystemState::new();
+
+        assert_eq!(state.status, "idle");
+        assert!(state.tasks.is_empty());
+        assert!(state.pending_tools.is_empty());
+        assert!(state.active_goal.is_none());
+        assert!(state.context_window.is_null());
+    }
+
+    #[test]
+    fn default_task_has_no_pending_work_and_is_not_cancelled() {
+        let task = Task::default();
+
+        assert_eq!(task.retries, 0);
+        assert!(task.pending_actions.is_empty());
+        assert!(!task.cancellation_flag);
+        assert_eq!(task.status, "");
+    }
+}

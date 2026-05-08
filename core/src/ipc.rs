@@ -47,3 +47,70 @@ impl JsonRpcResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn success_response_has_result_and_no_error() {
+        let response = JsonRpcResponse::success("req-1".to_string(), json!({"status": "queued"}));
+
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(response.id, "req-1");
+        assert_eq!(response.result, Some(json!({"status": "queued"})));
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn error_response_has_error_and_no_result() {
+        let response = JsonRpcResponse::error("req-1".to_string(), -32001, "suspended");
+
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(response.id, "req-1");
+        assert!(response.result.is_none());
+        assert_eq!(response.error.as_ref().unwrap().code, -32001);
+        assert_eq!(response.error.as_ref().unwrap().message, "suspended");
+    }
+
+    #[test]
+    fn success_response_serializes_without_error_field() {
+        let serialized = serde_json::to_value(JsonRpcResponse::success(
+            "req-1".to_string(),
+            json!({"ok": true}),
+        ))
+        .unwrap();
+
+        assert_eq!(serialized["jsonrpc"], "2.0");
+        assert_eq!(serialized["result"], json!({"ok": true}));
+        assert!(serialized.get("error").is_none());
+    }
+
+    #[test]
+    fn error_response_serializes_without_result_field() {
+        let serialized = serde_json::to_value(JsonRpcResponse::error(
+            "req-1".to_string(),
+            -1,
+            "bad request",
+        ))
+        .unwrap();
+
+        assert_eq!(serialized["error"], json!({"code": -1, "message": "bad request"}));
+        assert!(serialized.get("result").is_none());
+    }
+
+    #[test]
+    fn request_deserializes_params_as_json_value() {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "ui.input",
+            "params": {"text": "hello"}
+        }))
+        .unwrap();
+
+        assert_eq!(request.method, "ui.input");
+        assert_eq!(request.params["text"], "hello");
+    }
+}

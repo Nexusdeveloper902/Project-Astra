@@ -20,11 +20,7 @@ fn send_input(text: String) -> Result<String, String> {
     let req_str = format!("{}\n", serde_json::to_string(&req).unwrap());
     stream.write_all(req_str.as_bytes()).map_err(|e| format!("Failed to send: {}", e))?;
     
-    let mut buffer = [0; 4096];
-    let size = stream.read(&mut buffer).unwrap_or(0);
-    let res_str = String::from_utf8_lossy(&buffer[..size]).to_string();
-    
-    Ok(res_str)
+    Ok("Sent".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

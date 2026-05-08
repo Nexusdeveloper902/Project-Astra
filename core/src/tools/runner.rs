@@ -46,3 +46,46 @@ pub fn execute_tool(tool_name: &str, args: &Value) -> Result<Value, String> {
         _ => Err(format!("Unknown tool: {}", tool_name)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn run_shell_executes_command_and_returns_output() {
+        let result = execute_tool("run_shell", &json!({"cmd": "printf astra"})).unwrap();
+
+        assert_eq!(result["stdout"], "astra");
+        assert_eq!(result["stderr"], "");
+        assert_eq!(result["status_code"], 0);
+    }
+
+    #[test]
+    fn run_shell_reports_nonzero_status_code() {
+        let result = execute_tool("run_shell", &json!({"cmd": "exit 7"})).unwrap();
+
+        assert_eq!(result["status_code"], 7);
+    }
+
+    #[test]
+    fn run_shell_requires_cmd_argument() {
+        let error = execute_tool("run_shell", &json!({"command": "printf astra"})).unwrap_err();
+
+        assert_eq!(error, "Missing 'cmd' argument");
+    }
+
+    #[test]
+    fn save_memory_requires_content_argument_before_writing() {
+        let error = execute_tool("save_memory", &json!({"text": "missing content"})).unwrap_err();
+
+        assert_eq!(error, "Missing 'content' argument");
+    }
+
+    #[test]
+    fn unknown_tool_returns_descriptive_error() {
+        let error = execute_tool("missing_tool", &json!({})).unwrap_err();
+
+        assert_eq!(error, "Unknown tool: missing_tool");
+    }
+}

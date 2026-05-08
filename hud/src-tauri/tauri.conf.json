@@ -14,11 +14,13 @@
       {
         "title": "Astra HUD",
         "width": 800,
-        "height": 80,
+        "height": 600,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
-        "center": true
+        "center": true,
+        "resizable": true,
+        "focus": true
       }
     ],
     "security": {
