@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 class IntentContractPayload(BaseModel):
     objective: str
     constraints: List[str]
+    task_type: str
     requires_tools: bool
     requires_confirmation: bool
     persistence_policy: str
@@ -82,6 +83,38 @@ class ExecutionContextCapturedPayload(BaseModel):
     routing_decision: str
     retrieved_memory_ids: List[str]
 
+class TaskUpdatedPayload(BaseModel):
+    type: Literal["TaskUpdated"] = "TaskUpdated"
+    task_id: str
+    status: str
+    progress: Optional[float] = None
+
+class TaskCompletedPayload(BaseModel):
+    type: Literal["TaskCompleted"] = "TaskCompleted"
+    task_id: str
+    result: Any
+
+class TaskFailedPayload(BaseModel):
+    type: Literal["TaskFailed"] = "TaskFailed"
+    task_id: str
+    error: str
+    retryable: bool
+
+class TaskInterruptedPayload(BaseModel):
+    type: Literal["TaskInterrupted"] = "TaskInterrupted"
+    task_id: str
+    reason: str
+
+class MemoryRetrievedPayload(BaseModel):
+    type: Literal["MemoryRetrieved"] = "MemoryRetrieved"
+    task_id: str
+    memories: List[Dict[str, Any]]
+
+class MemoryWritePayload(BaseModel):
+    type: Literal["MemoryWrite"] = "MemoryWrite"
+    task_id: str
+    content: str
+
 class UiOutputPayload(BaseModel):
     type: Literal["UiOutput"] = "UiOutput"
     text: str
@@ -111,6 +144,12 @@ EventPayload = Union[
     ExecutionContextCapturedPayload,
     UiOutputPayload,
     ContextUpdatedPayload,
+    TaskUpdatedPayload,
+    TaskCompletedPayload,
+    TaskFailedPayload,
+    TaskInterruptedPayload,
+    MemoryRetrievedPayload,
+    MemoryWritePayload,
     SystemSuspendPayload,
     SystemResumePayload
 ]

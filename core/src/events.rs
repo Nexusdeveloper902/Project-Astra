@@ -50,6 +50,7 @@ pub enum EventPayload {
 pub struct IntentContractPayload {
     pub objective: String,
     pub constraints: Vec<String>,
+    pub task_type: String,
     pub requires_tools: bool,
     pub requires_confirmation: bool,
     pub persistence_policy: String,

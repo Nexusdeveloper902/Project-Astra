@@ -210,8 +210,7 @@ def main():
         index.add(embedder.embed_batch(texts), docs)
         
     llm_client = route_task("reasoning") # Default client
-    
-    emit_event(s, "task.updated", {"type": "TaskUpdated", "task_id": "system", "status": "idle"})
+
 
     
     logging.info(f"Connecting to {SOCKET_PATH}...")
@@ -226,6 +225,9 @@ def main():
             s.connect(SOCKET_PATH)
             logging.info("Connected. Ready for Agentic Loops.")
             
+            # 3.1.2 Set system status to idle
+            emit_event(s, "task.updated", {"type": "TaskUpdated", "task_id": "system", "status": "idle"})
+            
             buffer = ""
             messages = []
             while True:
@@ -239,6 +241,11 @@ def main():
                 for line in lines:
                     if not line.strip(): continue
                     logging.debug(f"Received raw line: {line}")
+                    
+                    # Skip JSON-RPC responses (they don't have 'event' field)
+                    if '"result":' in line or '"error":' in line:
+                        continue
+
                     try:
                         envelope = EventEnvelope.model_validate_json(line)
                     except Exception as e:

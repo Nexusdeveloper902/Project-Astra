@@ -35,6 +35,7 @@ pub fn reduce(mut state: SystemState, event: &EventEnvelope) -> SystemState {
                 let intent = crate::state::IntentContract {
                     objective: contract.objective.clone(),
                     constraints: contract.constraints.clone(),
+                    task_type: contract.task_type.clone(),
                     requires_tools: contract.requires_tools,
                     requires_confirmation: contract.requires_confirmation,
                     persistence_policy: contract.persistence_policy.clone(),
