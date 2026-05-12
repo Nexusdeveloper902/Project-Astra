@@ -9,10 +9,12 @@ from utils.parser import extract_tool_call, extract_text_response
 
 from llm.prompt import construct_prompt
 from llm.client import route_task
+from llm.intent import generate_intent_contract
 from tools.schema import registry
 from memory.parser import parse_vault
 from memory.embedder import DummyEmbedder, RealEmbedder
 from memory.index import MemoryIndex
+from events.schema import EventEnvelope
 
 def load_config():
     config_path = os.path.expanduser("~/.config/astra/config.toml")
@@ -48,7 +50,11 @@ def create_request(method, params, req_id):
         "params": params
     }
 
-def run_agent_cycle(s, messages, embedder, index, llm_client):
+def emit_event(s, method, params):
+    req = create_request(method, params, f"{method}_{int(time.time()*1000)}")
+    s.sendall((json.dumps(req) + "\n").encode('utf-8'))
+
+def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loop"):
     """Executes one step of the agent reasoning loop."""
     active_context = {
         "cwd": os.getcwd(),
@@ -58,38 +64,69 @@ def run_agent_cycle(s, messages, embedder, index, llm_client):
     }
     
     last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    
+    # 3.2.2 Refined Intent Classification
+    emit_event(s, "task.updated", {"type": "TaskUpdated", "task_id": task_id, "status": "classifying"})
+    
+    # Use classification-specific client
+    classifier_client = route_task("classification")
+    contract_data = generate_intent_contract(last_user_msg, classifier_client)
+    
+    emit_event(s, "intent.contracted", {
+        "type": "IntentContracted",
+        "task_id": task_id,
+        "contract": contract_data
+    })
+    
+    # 3.1.5 Retrieving State
+    emit_event(s, "task.updated", {"type": "TaskUpdated", "task_id": task_id, "status": "retrieving"})
     q_vec = embedder.embed(last_user_msg)
     results = index.search(q_vec, k=2)
     retrieved_texts = [r["text"] for r in results] if results else []
+    
+    emit_event(s, "memory.retrieved", {
+        "type": "MemoryRetrieved",
+        "task_id": task_id,
+        "memories": [{"text": t} for t in retrieved_texts]
+    })
+    
+    # 3.1.6 Executing State
+    emit_event(s, "task.updated", {"type": "TaskUpdated", "task_id": task_id, "status": "executing"})
+    
+    # Pass contract to the prompt
+    active_context["intent"] = contract_data
     
     prompt = construct_prompt(
         messages=messages,
         active_context=active_context,
         memory_retrievals=retrieved_texts,
         tools=registry.get_all_tools(),
-        task_state={"status": "processing"}
+        task_state={"status": "executing"}
     )
     
     logging.debug(f"\n--- AGENT PROMPT ---\n{prompt}\n--- END PROMPT ---\n")
     logging.info("--- AGENT CYCLE ---")
     
     # Emit execution context
-    context_env = create_request("execution.context_captured", {
+    routing_decision = contract_data.get("task_type", "reasoning")
+    reasoning_client = route_task(routing_decision)
+    
+    emit_event(s, "execution.context_captured", {
+        "type": "ExecutionContextCaptured",
         "context_id": f"ctx_{int(time.time())}",
         "session_id": "default",
-        "task_id": "agent_loop",
+        "task_id": task_id,
         "model_id": "llama-default",
-        "temperature": 0.7,
-        "max_tokens": 512,
+        "temperature": reasoning_client.default_params["temperature"],
+        "max_tokens": reasoning_client.default_params["max_tokens"],
         "prompt_template_version": "v1",
         "tool_registry_version": "v1",
         "planner_version": "v1",
-        "routing_decision": "general",
-        "retrieved_memory_ids": [] # Can populate properly in Phase 4
-    }, f"ctx_{int(time.time())}")
-    s.sendall((json.dumps(context_env) + "\n").encode('utf-8'))
+        "routing_decision": routing_decision,
+        "retrieved_memory_ids": [] 
+    })
     
-    llm_response = llm_client.generate(prompt, max_tokens=512)
+    llm_response = reasoning_client.generate(prompt)
     logging.info(f"Assistant: {llm_response}")
     
     messages.append({"role": "assistant", "content": llm_response})
@@ -101,20 +138,28 @@ def run_agent_cycle(s, messages, embedder, index, llm_client):
         clean_text = extract_text_response(llm_response)
         
         if clean_text:
-            res = create_request("ui.output", {"text": clean_text}, f"ui_{int(time.time())}")
+            res = create_request("ui.output", {
+                "type": "UiOutput",
+                "text": clean_text
+            }, f"ui_{int(time.time())}")
             s.sendall((json.dumps(res) + "\n").encode('utf-8'))
 
         if parsed_tool:
             args_str = json.dumps(parsed_tool['args'])
             status_text = f"[Executing: {parsed_tool['name']} {args_str}]"
             
-            status_msg = create_request("ui.output", {"text": status_text}, f"st_{int(time.time())}")
+            status_msg = create_request("ui.output", {
+                "type": "UiOutput",
+                "text": status_text
+            }, f"st_{int(time.time())}")
             s.sendall((json.dumps(status_msg) + "\n").encode('utf-8'))
             
             req = create_request("tool.requested", {
-                "task_id": "agent_loop",
+                "type": "ToolRequest",
+                "task_id": task_id,
                 "tool_name": parsed_tool["name"],
-                "args": parsed_tool["args"]
+                "args": parsed_tool["args"],
+                "danger_tier": "medium" if parsed_tool["name"] == "run_shell" else "low"
             }, f"req_{int(time.time())}")
             s.sendall((json.dumps(req) + "\n").encode('utf-8'))
             
@@ -122,16 +167,24 @@ def run_agent_cycle(s, messages, embedder, index, llm_client):
             # Emit tool.rejected for invalid tool attempts
             logging.warning(f"Tool rejected: {error_reason}")
             rej = create_request("tool.rejected", {
-                "task_id": "agent_loop",
+                "type": "ToolRejected",
+                "task_id": task_id,
                 "tool_name": "unknown",
                 "reason": error_reason
             }, f"rej_{int(time.time())}")
             s.sendall((json.dumps(rej) + "\n").encode('utf-8'))
             
             # Feed the rejection back to the LLM immediately to attempt a replan
-            messages.append({"role": "system", "content": f"Tool call failed validation: {error_reason}"})
+            messages.append({"role": "system", "content": f"Tool call validation failed: {error_reason}"})
             if len(messages) > 20: messages = messages[-20:]
-            run_agent_cycle(s, messages, embedder, index, llm_client)
+            run_agent_cycle(s, messages, embedder, index, llm_client, task_id)
+        else:
+            # No tool call found, assume task completed or just chat
+            emit_event(s, "task.completed", {
+                "type": "TaskCompleted",
+                "task_id": task_id,
+                "result": {"text": clean_text}
+            })
 
     except Exception as e:
         logging.error(f"Cycle Error: {e}")
@@ -156,7 +209,10 @@ def main():
         texts = [d["text"] for d in docs]
         index.add(embedder.embed_batch(texts), docs)
         
-    llm_client = route_task("general")
+    llm_client = route_task("reasoning") # Default client
+    
+    emit_event(s, "task.updated", {"type": "TaskUpdated", "task_id": "system", "status": "idle"})
+
     
     logging.info(f"Connecting to {SOCKET_PATH}...")
     for _ in range(20):
@@ -183,29 +239,39 @@ def main():
                 for line in lines:
                     if not line.strip(): continue
                     logging.debug(f"Received raw line: {line}")
-                    event = json.loads(line)
+                    try:
+                        envelope = EventEnvelope.model_validate_json(line)
+                    except Exception as e:
+                        logging.error(f"Schema validation failed for event: {e}")
+                        continue
                     
-                    if event.get("event") == "ui.input":
-                        user_text = event["data"]["text"]
+                    if envelope.event == "ui.input":
+                        user_text = envelope.data.text
                         messages.append({"role": "user", "content": user_text})
-                        # Prune history if too long (keep last 20)
                         if len(messages) > 20: messages = messages[-20:]
-                        run_agent_cycle(s, messages, embedder, index, llm_client)
                         
-                    elif event.get("event") == "tool.completed":
-                        res_data = event["data"]["result"]
+                        # 3.1.1 Create Task and start pipeline
+                        task_id = f"task_{int(time.time())}"
+                        emit_event(s, "task.created", {"type": "TaskCreated", "task_id": task_id, "goal": user_text})
+                        
+                        run_agent_cycle(s, messages, embedder, index, llm_client, task_id)
+                        
+                    elif envelope.event == "tool.completed":
+                        res_data = envelope.data.result
                         summary = json.dumps(res_data)
                         if len(summary) > 500: summary = summary[:500] + "... [truncated]"
                         
-                        messages.append({"role": "system", "content": f"Tool result: {summary}"})
+                        messages.append({"role": "system", "content": f"Tool completed. Result: {summary}"})
                         if len(messages) > 20: messages = messages[-20:]
-                        run_agent_cycle(s, messages, embedder, index, llm_client)
-
-                    elif event.get("event") == "tool.failed":
-                        err = event["data"]["error"]
+                        
+                        run_agent_cycle(s, messages, embedder, index, llm_client, envelope.data.task_id)
+                        
+                    elif envelope.event == "tool.rejected":
+                        err = envelope.data.reason
                         messages.append({"role": "system", "content": f"Tool failed: {err}"})
                         if len(messages) > 20: messages = messages[-20:]
-                        run_agent_cycle(s, messages, embedder, index, llm_client)
+                        
+                        run_agent_cycle(s, messages, embedder, index, llm_client, envelope.data.task_id)
 
         except Exception as e:
             logging.error(f"Runtime Error: {e}")

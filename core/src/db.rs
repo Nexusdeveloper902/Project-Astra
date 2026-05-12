@@ -73,29 +73,29 @@ impl Db {
         )?;
         let event_id = self.conn.last_insert_rowid();
 
-        if env.event == "ui.input" || env.event == "ui.output" {
-            let role = if env.event == "ui.input" { "user" } else { "assistant" };
-            let content = env.data.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            // Default session_id to "default" if not provided
-            let session_id = env.data.get("session_id").and_then(|v| v.as_str()).unwrap_or("default");
+        if let crate::events::EventPayload::UserInput { text, session_id, .. } = &env.data {
+            let role = "user";
+            let content = text.clone();
+            let session_id_str = session_id.as_deref().unwrap_or("default");
 
             self.conn.execute(
                 "INSERT INTO conversations (session_id, role, content, timestamp, event_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![session_id, role, content, env.timestamp, event_id],
+                params![session_id_str, role, content, env.timestamp, event_id],
             )?;
-        } else if env.event == "execution.context_captured" {
-            let ctx = &env.data;
-            let context_id = ctx.get("context_id").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let session_id = ctx.get("session_id").and_then(|v| v.as_str());
-            let task_id = ctx.get("task_id").and_then(|v| v.as_str());
-            let model_id = ctx.get("model_id").and_then(|v| v.as_str());
-            let temperature = ctx.get("temperature").and_then(|v| v.as_f64());
-            let max_tokens = ctx.get("max_tokens").and_then(|v| v.as_i64());
-            let prompt_template_version = ctx.get("prompt_template_version").and_then(|v| v.as_str());
-            let tool_registry_version = ctx.get("tool_registry_version").and_then(|v| v.as_str());
-            let planner_version = ctx.get("planner_version").and_then(|v| v.as_str());
-            let routing_decision = ctx.get("routing_decision").and_then(|v| v.as_str());
+        } else if let crate::events::EventPayload::UiOutput { text } = &env.data {
+            let role = "assistant";
+            let content = text.clone();
+            let session_id_str = "default";
 
+            self.conn.execute(
+                "INSERT INTO conversations (session_id, role, content, timestamp, event_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session_id_str, role, content, env.timestamp, event_id],
+            )?;
+        } else if let crate::events::EventPayload::ExecutionContextCaptured { 
+            context_id, session_id, task_id, model_id, temperature, max_tokens, 
+            prompt_template_version, tool_registry_version, planner_version, routing_decision, 
+            retrieved_memory_ids 
+        } = &env.data {
             self.conn.execute(
                 "INSERT INTO execution_contexts (
                     context_id, session_id, task_id, model_id, temperature, max_tokens, 
@@ -107,14 +107,11 @@ impl Db {
                 ],
             )?;
 
-            if let Some(memories) = ctx.get("retrieved_memory_ids").and_then(|v| v.as_array()) {
-                for (rank, mem) in memories.iter().enumerate() {
-                    let memory_id = mem.as_str().unwrap_or("unknown");
-                    self.conn.execute(
-                        "INSERT INTO retrieved_memory_ids (context_id, memory_id, rank) VALUES (?1, ?2, ?3)",
-                        params![context_id, memory_id, rank as i64],
-                    )?;
-                }
+            for (rank, memory_id) in retrieved_memory_ids.iter().enumerate() {
+                self.conn.execute(
+                    "INSERT INTO retrieved_memory_ids (context_id, memory_id, rank) VALUES (?1, ?2, ?3)",
+                    params![context_id, memory_id, rank as i64],
+                )?;
             }
         }
 
@@ -160,10 +157,15 @@ mod tests {
         let path = unique_db_path();
         let db = Db::new(&path).expect("db should initialize");
         let event = EventEnvelope {
+            schema_version: 1,
             event: "tool.completed".to_string(),
             timestamp: 456,
             source: "test".to_string(),
-            data: json!({"task_id": "task-1", "ok": true}),
+            data: crate::events::EventPayload::ToolResult {
+                task_id: "task-1".to_string(),
+                tool_name: "test".to_string(),
+                result: json!({"ok": true}),
+            },
         };
 
         db.insert_event(&event).expect("event should insert");
@@ -181,7 +183,16 @@ mod tests {
         assert_eq!(row.0, "tool.completed");
         assert_eq!(row.1, 456);
         assert_eq!(row.2, "test");
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&row.3).unwrap(), event.data);
+        assert_eq!(serde_json::from_str::<crate::events::EventPayload>(&row.3).unwrap().task_id(), "task-1");
         let _ = fs::remove_file(path);
+    }
+}
+
+impl crate::events::EventPayload {
+    pub fn task_id(&self) -> &str {
+        match self {
+            crate::events::EventPayload::ToolResult { task_id, .. } => task_id,
+            _ => "",
+        }
     }
 }

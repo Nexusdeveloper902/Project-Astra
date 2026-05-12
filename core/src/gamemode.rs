@@ -63,11 +63,18 @@ fn send_event(tx: &Sender<EventEnvelope>, event_name: &str) {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
+    let data = if event_name == "system.resume" {
+        crate::events::EventPayload::SystemResume {}
+    } else {
+        crate::events::EventPayload::SystemSuspend { reason: "gamemode_watcher".to_string() }
+    };
+    
     let env = EventEnvelope {
+        schema_version: 1,
         event: event_name.to_string(),
         timestamp,
         source: "gamemode_watcher".to_string(),
-        data: serde_json::json!({}),
+        data,
     };
     let _ = tx.send(env);
 }

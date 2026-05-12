@@ -89,21 +89,64 @@ fn handle_client(mut stream: UnixStream, event_sender: Sender<EventEnvelope>) {
                                 continue;
                             }
 
-                            let env = EventEnvelope {
-                                event: req.method.clone(),
-                                timestamp: now_secs(),
-                                source: "ipc".to_string(),
-                                data: req.params.clone(),
-                            };
-                            if let Err(e) = event_sender.send(env) {
-                                log::error!("Failed to send event to queue: {}", e);
+                            let mut params = req.params.clone();
+                            if let serde_json::Value::Object(ref mut map) = params {
+                                let event_type = match req.method.as_str() {
+                                    "ui.input" => "UserInput",
+                                    "task.created" => "TaskCreated",
+                                    "task.updated" => "TaskUpdated",
+                                    "task.completed" => "TaskCompleted",
+                                    "task.failed" => "TaskFailed",
+                                    "task.interrupted" => "TaskInterrupted",
+                                    "memory.retrieved" => "MemoryRetrieved",
+                                    "memory.write" => "MemoryWrite",
+                                    "tool.requested" => "ToolRequest",
+                                    "tool.completed" => "ToolResult",
+                                    "tool.rejected" => "ToolRejected",
+                                    "tool.confirmation_required" => "ToolConfirmationRequired",
+                                    "tool.confirmed" => "ToolConfirmed",
+                                    "tool.denied" => "ToolDenied",
+                                    "intent.contracted" => "IntentContracted",
+                                    "execution.context_captured" => "ExecutionContextCaptured",
+                                    "ui.output" => "UiOutput",
+                                    "context.updated" => "ContextUpdated",
+                                    "system.suspend" => "SystemSuspend",
+                                    "system.resume" => "SystemResume",
+                                    _ => "Unknown",
+                                };
+                                map.insert("type".to_string(), serde_json::Value::String(event_type.to_string()));
                             }
-                            let res = JsonRpcResponse::success(
-                                req.id,
-                                serde_json::json!({"status": "queued"}),
-                            );
-                            let res_str = format!("{}\n", serde_json::to_string(&res).unwrap());
-                            let _ = stream.write_all(res_str.as_bytes());
+
+                            match serde_json::from_value::<events::EventPayload>(params) {
+                                Ok(data) => {
+                                    let env = EventEnvelope {
+                                        schema_version: 1,
+                                        event: req.method.clone(),
+                                        timestamp: now_secs(),
+                                        source: "ipc".to_string(),
+                                        data,
+                                    };
+                                    if let Err(e) = event_sender.send(env) {
+                                        log::error!("Failed to send event to queue: {}", e);
+                                    }
+                                    let res = JsonRpcResponse::success(
+                                        req.id,
+                                        serde_json::json!({"status": "queued"}),
+                                    );
+                                    let res_str = format!("{}\n", serde_json::to_string(&res).unwrap());
+                                    let _ = stream.write_all(res_str.as_bytes());
+                                },
+                                Err(e) => {
+                                    log::error!("Schema validation failed for {}: {}", req.method, e);
+                                    let res = JsonRpcResponse::error(
+                                        req.id,
+                                        -32602,
+                                        &format!("Schema validation failed: {}", e),
+                                    );
+                                    let res_str = format!("{}\n", serde_json::to_string(&res).unwrap());
+                                    let _ = stream.write_all(res_str.as_bytes());
+                                }
+                            }
                         }
                         Err(e) => {
                             log::error!("Failed to parse request: {}", e);
@@ -181,10 +224,11 @@ fn main() {
 
     if matches!(gamemode::is_game_mode_enabled(), Some(true)) {
         let _ = event_tx.send(EventEnvelope {
+            schema_version: 1,
             event: "system.suspend".to_string(),
             timestamp: now_secs(),
             source: "startup".to_string(),
-            data: serde_json::json!({ "reason": "gamemode_active" }),
+            data: events::EventPayload::SystemSuspend { reason: "gamemode_active".to_string() },
         });
     }
 
@@ -212,54 +256,171 @@ fn main() {
                     }
                 }
 
-                if event.event == "tool.requested" {
-                    let task_id = event
-                        .data
-                        .get("task_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let tool_name = event
-                        .data
-                        .get("tool_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let args = event.data.get("args").unwrap_or(&serde_json::Value::Null);
+                if let events::EventPayload::ToolRequest { task_id, tool_name, args, danger_tier } = &event.data {
+                    let needs_confirmation = if let Some(task) = state.tasks.get(task_id) {
+                        task.intent.as_ref().map(|i| i.requires_confirmation).unwrap_or(true)
+                    } else {
+                        true
+                    };
 
-                    log::info!("Executing Tool: {} for Task: {}", tool_name, task_id);
-                    match tools::runner::execute_tool(tool_name, args) {
-                        Ok(result) => {
-                            let comp_env = EventEnvelope {
-                                event: "tool.completed".to_string(),
-                                timestamp: now_secs(),
-                                source: "tool_runner".to_string(),
-                                data: serde_json::json!({
-                                    "task_id": task_id,
-                                    "tool_name": tool_name,
-                                    "result": result
-                                }),
-                            };
-                            let _ = loop_tx.send(comp_env);
-                        }
-                        Err(e) => {
-                            let err_env = EventEnvelope {
-                                event: "tool.failed".to_string(),
-                                timestamp: now_secs(),
-                                source: "tool_runner".to_string(),
-                                data: serde_json::json!({
-                                    "task_id": task_id,
-                                    "tool_name": tool_name,
-                                    "error": e
-                                }),
-                            };
-                            let _ = loop_tx.send(err_env);
+                    // Also check danger tier (heuristically)
+                    let is_dangerous = danger_tier.as_deref().unwrap_or("") == "high" || tool_name == "run_shell";
+
+                    if needs_confirmation || is_dangerous {
+                        log::info!("Tool {} requires confirmation", tool_name);
+                        let pending_id = format!("pend_{}", now_secs());
+                        let conf_env = EventEnvelope {
+                            schema_version: 1,
+                            event: "tool.confirmation_required".to_string(),
+                            timestamp: now_secs(),
+                            source: "core".to_string(),
+                            data: events::EventPayload::ToolConfirmationRequired {
+                                task_id: task_id.clone(),
+                                tool_name: tool_name.clone(),
+                                args: args.clone(),
+                                pending_id,
+                            },
+                        };
+                        let _ = loop_tx.send(conf_env);
+                    } else {
+                        log::info!("Executing Tool: {} for Task: {}", tool_name, task_id);
+                        match tools::runner::execute_tool(tool_name, args) {
+                            Ok(result) => {
+                                let comp_env = EventEnvelope {
+                                    schema_version: 1,
+                                    event: "tool.completed".to_string(),
+                                    timestamp: now_secs(),
+                                    source: "tool_runner".to_string(),
+                                    data: events::EventPayload::ToolResult {
+                                        task_id: task_id.clone(),
+                                        tool_name: tool_name.clone(),
+                                        result,
+                                    },
+                                };
+                                let _ = loop_tx.send(comp_env);
+                            }
+                            Err(e) => {
+                                log::error!("Tool Error: {}", e);
+                                let retryable = tool_name != "rm"; // Basic retryability logic
+                                let fail_env = EventEnvelope {
+                                    schema_version: 1,
+                                    event: "task.failed".to_string(),
+                                    timestamp: now_secs(),
+                                    source: "tool_runner".to_string(),
+                                    data: events::EventPayload::TaskFailed {
+                                        task_id: task_id.clone(),
+                                        error: e.to_string(),
+                                        retryable,
+                                    },
+                                };
+                                let _ = loop_tx.send(fail_env);
+
+                                if retryable {
+                                    if let Some(task) = state.tasks.get_mut(task_id) {
+                                        if task.retry_count < task.max_retries {
+                                            task.retry_count += 1;
+                                            log::info!("Retrying tool {} (attempt {})", tool_name, task.retry_count);
+                                            // Re-request tool after short delay (simulated here by re-sending)
+                                            let _ = loop_tx.send(event.clone());
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
-                if event.event == "system.suspend" {
+                if let events::EventPayload::ToolConfirmed { pending_id, .. } = &event.data {
+                    if let Some(pending) = state.pending_executions.get(pending_id) {
+                        log::info!("Executing Confirmed Tool: {} for Task: {}", pending.tool_name, pending.task_id);
+                        match tools::runner::execute_tool(&pending.tool_name, &pending.args) {
+                            Ok(result) => {
+                                let comp_env = EventEnvelope {
+                                    schema_version: 1,
+                                    event: "tool.completed".to_string(),
+                                    timestamp: now_secs(),
+                                    source: "tool_runner".to_string(),
+                                    data: events::EventPayload::ToolResult {
+                                        task_id: pending.task_id.clone(),
+                                        tool_name: pending.tool_name.clone(),
+                                        result,
+                                    },
+                                };
+                                let _ = loop_tx.send(comp_env);
+                            }
+                            Err(e) => {
+                                let fail_env = EventEnvelope {
+                                    schema_version: 1,
+                                    event: "task.failed".to_string(),
+                                    timestamp: now_secs(),
+                                    source: "tool_runner".to_string(),
+                                    data: events::EventPayload::TaskFailed {
+                                        task_id: pending.task_id.clone(),
+                                        error: e.to_string(),
+                                        retryable: false,
+                                    },
+                                };
+                                let _ = loop_tx.send(fail_env);
+                            }
+                        }
+                    }
+                }
+
+                if let events::EventPayload::ToolDenied { pending_id, reason, .. } = &event.data {
+                    if let Some(pending) = state.pending_executions.get(pending_id) {
+                        log::info!("Tool Denied: {} for Task: {}", pending.tool_name, pending.task_id);
+                        let rej_env = EventEnvelope {
+                            schema_version: 1,
+                            event: "tool.rejected".to_string(),
+                            timestamp: now_secs(),
+                            source: "core".to_string(),
+                            data: events::EventPayload::ToolRejected {
+                                task_id: pending.task_id.clone(),
+                                tool_name: pending.tool_name.clone(),
+                                reason: format!("User denied: {}", reason),
+                            },
+                        };
+                        let _ = loop_tx.send(rej_env);
+                    }
+                }
+
+                if let events::EventPayload::SystemSuspend { .. } = &event.data {
                     stop_heavy_components();
-                } else if event.event == "system.resume" {
+                    // Interrupt all active tasks
+                    for (task_id, task) in state.tasks.iter_mut() {
+                        if task.status == "executing" || task.status == "planning" {
+                            let int_env = EventEnvelope {
+                                schema_version: 1,
+                                event: "task.interrupted".to_string(),
+                                timestamp: now_secs(),
+                                source: "core".to_string(),
+                                data: events::EventPayload::TaskInterrupted {
+                                    task_id: task_id.clone(),
+                                    reason: "system_suspend".to_string(),
+                                },
+                            };
+                            let _ = loop_tx.send(int_env);
+                        }
+                    }
+                } else if let events::EventPayload::SystemResume {} = &event.data {
                     start_heavy_components();
+                    // Resume interrupted tasks
+                    for (task_id, task) in state.tasks.iter_mut() {
+                        if task.status == "interrupted" && task.interrupt_reason.as_deref() == Some("system_suspend") {
+                            let upd_env = EventEnvelope {
+                                schema_version: 1,
+                                event: "task.updated".to_string(),
+                                timestamp: now_secs(),
+                                source: "core".to_string(),
+                                data: events::EventPayload::TaskUpdated {
+                                    task_id: task_id.clone(),
+                                    status: "executing".to_string(),
+                                    progress: None,
+                                },
+                            };
+                            let _ = loop_tx.send(upd_env);
+                        }
+                    }
                 }
 
                 state = reducer::reduce(state, &event);

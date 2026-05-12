@@ -7,6 +7,13 @@ pub fn execute_tool(tool_name: &str, args: &Value) -> Result<Value, String> {
     match tool_name {
         "run_shell" => {
             if let Some(cmd_str) = args.get("cmd").and_then(|v| v.as_str()) {
+                let blocked = ["rm -rf /", "mkfs", "dd if=/dev/zero", ":(){ :|:& };:"];
+                for b in blocked {
+                    if cmd_str.contains(b) {
+                        return Err(format!("Command contains blocked pattern: {}", b));
+                    }
+                }
+
                 let output = Command::new("bash")
                     .arg("-c")
                     .arg(cmd_str)

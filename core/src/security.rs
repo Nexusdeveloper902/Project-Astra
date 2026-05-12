@@ -8,7 +8,7 @@ pub struct CapabilityToken {
     pub capabilities: Vec<String>,
     pub issued_at: u64,
     pub expires_at: u64,
-    pub origin: String,
+    pub issued_by: String,
 }
 
 impl CapabilityToken {
@@ -35,7 +35,7 @@ mod tests {
             capabilities: vec!["read".to_string()],
             issued_at: 10,
             expires_at: 20,
-            origin: "test".to_string(),
+            issued_by: "test".to_string(),
         }
     }
 
