@@ -9,3 +9,6 @@ serde_json = "1.0"
 rusqlite = { version = "0.31", features = ["bundled"] }
 crossbeam-channel = "0.5"
 lazy_static = "1.4"
+toml = "0.8"
+log = "0.4"
+env_logger = "0.11"

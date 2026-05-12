@@ -27,11 +27,12 @@ pub fn execute_tool(tool_name: &str, args: &Value) -> Result<Value, String> {
         }
         "save_memory" => {
             if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
+                let vault_file = &crate::config::CONFIG.orchestrator.vault_file;
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open("/home/jperez/Astra/vault_memories.md")
-                    .map_err(|e| e.to_string())?;
+                    .open(vault_file)
+                    .map_err(|e| format!("Failed to open {}: {}", vault_file, e))?;
                 
                 writeln!(file, "\n{}", content).map_err(|e| e.to_string())?;
                 

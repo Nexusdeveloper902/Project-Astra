@@ -6,6 +6,7 @@ mod reducer;
 mod security;
 mod state;
 mod tools;
+mod config;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use db::Db;
@@ -19,9 +20,6 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SOCKET_PATH: &str = "/tmp/astra.sock";
-const DB_PATH: &str = "/tmp/astra.db";
-
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -30,7 +28,7 @@ fn now_secs() -> u64 {
 }
 
 fn stop_heavy_components() {
-    println!("[Core] Suspending heavy components for Game Mode...");
+    log::info!("[Core] Suspending heavy components for Game Mode...");
     let targets = [
         ("-f", "llama-server"),
         ("-f", "orchestrator/main.py"),
@@ -54,13 +52,13 @@ fn stop_heavy_components() {
 
 fn start_heavy_components() {
     if matches!(gamemode::is_game_mode_enabled(), Some(true)) {
-        println!("[Core] Game Mode is still active; skipping Astra resume.");
+        log::info!("[Core] Game Mode is still active; skipping Astra resume.");
         return;
     }
 
-    println!("[Core] Resuming Astra components...");
+    log::info!("[Core] Resuming Astra components...");
     let _ = Command::new("bash")
-        .arg("/home/jperez/.local/bin/astra-toggle")
+        .arg(&config::CONFIG.core.toggle_script_path)
         .spawn();
 }
 
@@ -79,7 +77,7 @@ fn handle_client(mut stream: UnixStream, event_sender: Sender<EventEnvelope>) {
                     }
                     match serde_json::from_str::<JsonRpcRequest>(line) {
                         Ok(req) => {
-                            println!("IPC: Received request {:?}", req.method);
+                            log::debug!("IPC: Received request {:?}", req.method);
                             if matches!(gamemode::is_game_mode_enabled(), Some(true)) {
                                 let res = JsonRpcResponse::error(
                                     req.id,
@@ -98,7 +96,7 @@ fn handle_client(mut stream: UnixStream, event_sender: Sender<EventEnvelope>) {
                                 data: req.params.clone(),
                             };
                             if let Err(e) = event_sender.send(env) {
-                                eprintln!("Failed to send event to queue: {}", e);
+                                log::error!("Failed to send event to queue: {}", e);
                             }
                             let res = JsonRpcResponse::success(
                                 req.id,
@@ -108,13 +106,13 @@ fn handle_client(mut stream: UnixStream, event_sender: Sender<EventEnvelope>) {
                             let _ = stream.write_all(res_str.as_bytes());
                         }
                         Err(e) => {
-                            eprintln!("Failed to parse request: {}", e);
+                            log::error!("Failed to parse request: {}", e);
                         }
                     }
                 }
             }
             Err(e) => {
-                eprintln!("IPC Error: {}", e);
+                log::error!("IPC Error: {}", e);
                 break;
             }
         }
@@ -122,17 +120,22 @@ fn handle_client(mut stream: UnixStream, event_sender: Sender<EventEnvelope>) {
 }
 
 fn main() {
-    println!("Starting Astra Core...");
-    if fs::metadata(SOCKET_PATH).is_ok() {
-        fs::remove_file(SOCKET_PATH).unwrap();
+    env_logger::init();
+    log::info!("Starting Astra Core...");
+    
+    let socket_path = &config::CONFIG.core.socket_path;
+    let db_path = &config::CONFIG.core.db_path;
+
+    if fs::metadata(socket_path).is_ok() {
+        fs::remove_file(socket_path).unwrap();
     }
 
-    let db = Db::new(DB_PATH).expect("Failed to initialize SQLite db");
+    let db = Db::new(db_path).expect("Failed to initialize SQLite db");
     let mut state = SystemState::new();
     let (event_tx, event_rx): (Sender<EventEnvelope>, Receiver<EventEnvelope>) = unbounded();
 
-    let listener = UnixListener::bind(SOCKET_PATH).unwrap();
-    println!("Listening on {}", SOCKET_PATH);
+    let listener = UnixListener::bind(socket_path).unwrap();
+    log::info!("Listening on {}", socket_path);
 
     let tx_clone = event_tx.clone();
     let clients = Arc::new(Mutex::new(Vec::<Sender<String>>::new()));
@@ -163,14 +166,14 @@ fn main() {
                     std::thread::spawn(move || handle_client(stream_read, tx_event));
                 }
                 Err(err) => {
-                    eprintln!("Connection failed: {}", err);
+                    log::error!("Connection failed: {}", err);
                     break;
                 }
             }
         }
     });
 
-    println!("Event Loop started.");
+    log::info!("Event Loop started.");
     let loop_tx = event_tx.clone();
 
     // Start the GameMode watcher
@@ -188,9 +191,9 @@ fn main() {
     loop {
         match event_rx.recv() {
             Ok(event) => {
-                println!("EVENT: {} from {}", event.event, event.source);
+                log::info!("EVENT: {} from {}", event.event, event.source);
                 if let Err(e) = db.insert_event(&event) {
-                    eprintln!("Failed to log event: {}", e);
+                    log::error!("Failed to log event: {}", e);
                 }
 
                 // Async broadcast via dedicated sender threads
@@ -222,7 +225,7 @@ fn main() {
                         .unwrap_or("");
                     let args = event.data.get("args").unwrap_or(&serde_json::Value::Null);
 
-                    println!("Executing Tool: {} for Task: {}", tool_name, task_id);
+                    log::info!("Executing Tool: {} for Task: {}", tool_name, task_id);
                     match tools::runner::execute_tool(tool_name, args) {
                         Ok(result) => {
                             let comp_env = EventEnvelope {
@@ -262,7 +265,7 @@ fn main() {
                 state = reducer::reduce(state, &event);
             }
             Err(_) => {
-                println!("Event queue disconnected, shutting down.");
+                log::info!("Event queue disconnected, shutting down.");
                 break;
             }
         }

@@ -37,12 +37,17 @@ class StaticIndex:
 
 class StaticLlm:
     def __init__(self, response):
-        self.response = response
+        if isinstance(response, str):
+            self.responses = [response]
+        else:
+            self.responses = list(response)
         self.calls = []
 
     def generate(self, prompt, max_tokens=512):
         self.calls.append((prompt, max_tokens))
-        return self.response
+        if len(self.responses) > 1:
+            return self.responses.pop(0)
+        return self.responses[0]
 
 
 class TestMainHelpers(unittest.TestCase):
@@ -77,8 +82,8 @@ class TestRunAgentCycle(unittest.TestCase):
         self.assertEqual(index.calls[0][1], 2)
         self.assertEqual(len(llm.calls), 1)
         self.assertIn("memory one", llm.calls[0][0])
-        self.assertEqual(socket.sent[0]["method"], "ui.output")
-        self.assertEqual(socket.sent[0]["params"], {"text": "Plain answer"})
+        self.assertEqual([event["method"] for event in socket.sent], ["execution.context_captured", "ui.output"])
+        self.assertEqual(socket.sent[1]["params"], {"text": "Plain answer"})
 
     def test_tool_call_response_emits_clean_text_status_and_tool_request(self):
         socket = RecordingSocket()
@@ -89,11 +94,11 @@ class TestRunAgentCycle(unittest.TestCase):
 
         self.run_cycle_quietly(socket, messages, StaticEmbedder(), StaticIndex(), llm)
 
-        self.assertEqual([event["method"] for event in socket.sent], ["ui.output", "ui.output", "tool.requested"])
-        self.assertEqual(socket.sent[0]["params"], {"text": "I will inspect it."})
-        self.assertIn("[Executing: run_shell", socket.sent[1]["params"]["text"])
+        self.assertEqual([event["method"] for event in socket.sent], ["execution.context_captured", "ui.output", "ui.output", "tool.requested"])
+        self.assertEqual(socket.sent[1]["params"], {"text": "I will inspect it."})
+        self.assertIn("[Executing: run_shell", socket.sent[2]["params"]["text"])
         self.assertEqual(
-            socket.sent[2]["params"],
+            socket.sent[3]["params"],
             {
                 "task_id": "agent_loop",
                 "tool_name": "run_shell",
@@ -108,8 +113,8 @@ class TestRunAgentCycle(unittest.TestCase):
 
         self.run_cycle_quietly(socket, messages, StaticEmbedder(), StaticIndex(), llm)
 
-        self.assertEqual([event["method"] for event in socket.sent], ["ui.output", "tool.requested"])
-        self.assertTrue(socket.sent[0]["params"]["text"].startswith("[Executing: run_shell"))
+        self.assertEqual([event["method"] for event in socket.sent], ["execution.context_captured", "ui.output", "tool.requested"])
+        self.assertTrue(socket.sent[1]["params"]["text"].startswith("[Executing: run_shell"))
 
     def test_quoted_transcript_lines_are_filtered_from_clean_text(self):
         socket = RecordingSocket()
@@ -118,7 +123,7 @@ class TestRunAgentCycle(unittest.TestCase):
 
         self.run_cycle_quietly(socket, messages, StaticEmbedder(), StaticIndex(), llm)
 
-        self.assertEqual(socket.sent[0]["params"], {"text": "Visible answer"})
+        self.assertEqual(socket.sent[1]["params"], {"text": "Visible answer"})
 
     def test_most_recent_user_message_is_used_for_memory_lookup(self):
         class RecordingEmbedder:
@@ -145,13 +150,12 @@ class TestRunAgentCycle(unittest.TestCase):
     def test_invalid_tool_json_falls_back_to_text_output_without_crashing(self):
         socket = RecordingSocket()
         messages = [{"role": "user", "content": "bad json"}]
-        llm = StaticLlm('Text first {"tool_name": "run_shell", "args": }')
+        llm = StaticLlm(['Text first {"tool_name": "run_shell", "args": }', 'Valid retry without tool'])
 
         self.run_cycle_quietly(socket, messages, StaticEmbedder(), StaticIndex(), llm)
 
-        self.assertEqual(len(socket.sent), 1)
-        self.assertEqual(socket.sent[0]["method"], "ui.output")
-        self.assertIn("Text first", socket.sent[0]["params"]["text"])
+        self.assertEqual([event["method"] for event in socket.sent], ["execution.context_captured", "ui.output", "tool.rejected", "execution.context_captured", "ui.output"])
+        self.assertIn("Text first", socket.sent[1]["params"]["text"])
 
 
 if __name__ == "__main__":
