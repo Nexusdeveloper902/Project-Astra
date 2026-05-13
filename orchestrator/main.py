@@ -197,17 +197,39 @@ def main():
     memory_config = config.get("memory", {})
     embedder_type = memory_config.get("embedder_type", "sentence-transformers")
     embedder_model = memory_config.get("embedder_model", "all-MiniLM-L6-v2")
+    # Real embeddings (all-MiniLM-L6-v2) have dim 384, Dummy uses 128
     embedder_dim = memory_config.get("embedder_dim", 384 if embedder_type == "sentence-transformers" else 128)
     
     if embedder_type == "dummy":
         embedder = DummyEmbedder(dim=embedder_dim)
-    else:
-        embedder = RealEmbedder(model_name=embedder_model)
-        
+    # 2. Build Memory Index
+    embedder = RealEmbedder()
     index = MemoryIndex(dim=embedder.dim)
-    if docs:
-        texts = [d["text"] for d in docs]
-        index.add(embedder.embed_batch(texts), docs)
+    
+    vault_dir = "/home/jperez/Astra/memories"
+    vault_file = "/home/jperez/Astra/vault_memories.md"
+    
+    all_docs = []
+    # 1. Load from dedicated memories directory
+    if os.path.exists(vault_dir):
+        all_docs.extend(parse_vault(vault_dir))
+    
+    # 2. Load the specific auto-vault file
+    if os.path.exists(vault_file):
+        with open(vault_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+            chunks = [c.strip() for c in content.split('\n\n') if c.strip()]
+            for i, chunk in enumerate(chunks):
+                all_docs.append({
+                    "id": f"vault_{i}",
+                    "text": chunk,
+                    "source": vault_file
+                })
+    
+    if all_docs:
+        logging.info(f"Indexing {len(all_docs)} memory chunks...")
+        texts = [d["text"] for d in all_docs]
+        index.add(embedder.embed_batch(texts), all_docs)
         
     llm_client = route_task("reasoning") # Default client
 
@@ -272,6 +294,12 @@ def main():
                         if len(messages) > 20: messages = messages[-20:]
                         
                         run_agent_cycle(s, messages, embedder, index, llm_client, envelope.data.task_id)
+                        
+                    elif envelope.event == "memory.retrieved":
+                        # We just log this for observability. 
+                        # Memory is already injected into the prompt synchronously in run_agent_cycle.
+                        docs = envelope.data.memories
+                        logging.info(f"Retrieved {len(docs)} memories.")
                         
                     elif envelope.event == "tool.rejected":
                         err = envelope.data.reason

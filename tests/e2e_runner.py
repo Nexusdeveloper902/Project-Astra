@@ -63,6 +63,30 @@ class AstraE2ETestCase(unittest.TestCase):
                     return final_text
                 self.fail("Timed out waiting for Astra response.")
 
+    def get_all_events(self):
+        return self.events
+
+    def wait_for_event(self, event_type, timeout=10.0):
+        """Wait until an event of a specific type is received."""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                self.sock.settimeout(1.0)
+                data = self.sock.recv(4096)
+                if data:
+                    self.buffer += data.decode('utf-8')
+                    lines = self.buffer.split('\n')
+                    self.buffer = lines.pop()
+                    for line in lines:
+                        if not line.strip(): continue
+                        event = json.loads(line)
+                        self.events.append(event)
+                        if event.get("event") == event_type:
+                            return [e for e in self.events if e.get("event") == event_type]
+            except socket.timeout:
+                continue
+        return [e for e in self.events if e.get("event") == event_type]
+
     def get_requested_tools(self):
         return [e for e in self.events if e.get("event") == "tool.requested"]
 

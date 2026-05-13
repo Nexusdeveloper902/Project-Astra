@@ -10,7 +10,7 @@ def generate_intent_contract(user_msg: str, llm_client) -> dict:
     
     # Heuristics for deterministic fields
     requires_tools = True  # We assume tools might be needed by default
-    requires_confirmation = True # Default to safe confirmation
+    requires_confirmation = False # Core will still block if tool is dangerous
     persistence_policy = "persistent"
     expected_output_type = "action_or_text"
     

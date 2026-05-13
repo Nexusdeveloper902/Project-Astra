@@ -50,6 +50,40 @@ fn stop_heavy_components() {
     }
 }
 
+fn is_shell_safe(cmd: &str) -> bool {
+    let cmd = cmd.trim();
+    let safe_tools = ["ls", "cat", "grep", "pwd", "find", "du", "df", "echo", "head", "tail", "which"];
+    
+    // Check if it starts with a safe tool
+    let starts_with_safe = safe_tools.iter().any(|&tool| {
+        cmd == tool || cmd.starts_with(&(tool.to_string() + " "))
+    });
+
+    if !starts_with_safe {
+        return false;
+    }
+
+    // Block redirection and pipes to potentially dangerous tools
+    let dangerous_tokens = [">", ">>", "|", ";", "&", "$(", "`", "rm", "mv", "cp", "mkdir", "chmod", "chown", "sudo", "apt", "dnf", "yum", "pip", "npm", "curl", "wget"];
+    
+    // Simple heuristic: if any dangerous token is present after the tool name
+    // (We allow the tool name itself, which we already checked is safe)
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    if parts.len() > 1 {
+        for part in &parts[1..] {
+            if dangerous_tokens.contains(part) {
+                return false;
+            }
+            // Also check for sub-strings like ">"
+            if part.contains('>') || part.contains('|') || part.contains(';') {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 fn start_heavy_components() {
     if matches!(gamemode::is_game_mode_enabled(), Some(true)) {
         log::info!("[Core] Game Mode is still active; skipping Astra resume.");
@@ -264,10 +298,17 @@ fn main() {
                     };
 
                     // Also check danger tier (heuristically)
-                    let is_dangerous = danger_tier.as_deref().unwrap_or("") == "high" || tool_name == "run_shell";
+                    let mut is_dangerous = danger_tier.as_deref().unwrap_or("") == "high";
+                    
+                    if tool_name == "run_shell" {
+                        let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+                        if !is_shell_safe(cmd) {
+                            is_dangerous = true;
+                        }
+                    }
 
                     if needs_confirmation || is_dangerous {
-                        log::info!("Tool {} requires confirmation", tool_name);
+                        log::info!("Tool {} requires confirmation (dangerous: {})", tool_name, is_dangerous);
                         let pending_id = format!("pend_{}", now_secs());
                         let conf_env = EventEnvelope {
                             schema_version: 1,
