@@ -15,6 +15,7 @@ from tools.schema import registry
 from memory.parser import parse_vault
 from memory.embedder import DummyEmbedder, RealEmbedder
 from memory.index import MemoryIndex
+from memory.policy import should_store, summarize_task_for_memory
 from events.schema import EventEnvelope
 
 def load_config():
@@ -57,14 +58,15 @@ def emit_event(s, method, params):
 
 def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loop"):
     """Executes one step of the agent reasoning loop."""
+    last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    
     active_context = {
         "cwd": os.getcwd(),
         "home": os.environ.get("HOME"),
         "user": os.environ.get("USER"),
-        "app": "Astra HUD"
+        "app": "Astra HUD",
+        "goal": last_user_msg
     }
-    
-    last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
     
     # 3.2.2 Refined Intent Classification
     emit_event(s, "task.updated", {"type": "TaskUpdated", "task_id": task_id, "status": "classifying"})
@@ -153,41 +155,37 @@ def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loo
         clean_text = extract_text_response(llm_response)
         
         if clean_text:
-            res = create_request("ui.output", {
+            emit_event(s, "ui.output", {
                 "type": "UiOutput",
                 "text": clean_text
-            }, f"ui_{int(time.time())}")
-            s.sendall((json.dumps(res) + "\n").encode('utf-8'))
+            })
 
         if parsed_tool:
             args_str = json.dumps(parsed_tool['args'])
             status_text = f"[Executing: {parsed_tool['name']} {args_str}]"
             
-            status_msg = create_request("ui.output", {
+            emit_event(s, "ui.output", {
                 "type": "UiOutput",
                 "text": status_text
-            }, f"st_{int(time.time())}")
-            s.sendall((json.dumps(status_msg) + "\n").encode('utf-8'))
+            })
             
-            req = create_request("tool.requested", {
+            emit_event(s, "tool.requested", {
                 "type": "ToolRequest",
                 "task_id": task_id,
                 "tool_name": parsed_tool["name"],
                 "args": parsed_tool["args"],
                 "danger_tier": "medium" if parsed_tool["name"] == "run_shell" else "low"
-            }, f"req_{int(time.time())}")
-            s.sendall((json.dumps(req) + "\n").encode('utf-8'))
+            })
             
         elif error_reason and "No JSON blocks found" not in error_reason:
             # Emit tool.rejected for invalid tool attempts
             logging.warning(f"Tool rejected: {error_reason}")
-            rej = create_request("tool.rejected", {
+            emit_event(s, "tool.rejected", {
                 "type": "ToolRejected",
                 "task_id": task_id,
                 "tool_name": "unknown",
                 "reason": error_reason
-            }, f"rej_{int(time.time())}")
-            s.sendall((json.dumps(rej) + "\n").encode('utf-8'))
+            })
             
             # Feed the rejection back to the LLM immediately to attempt a replan
             messages.append({"role": "system", "content": f"Tool call validation failed: {error_reason}"})
@@ -200,6 +198,18 @@ def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loo
                 "task_id": task_id,
                 "result": {"text": clean_text}
             })
+
+            # Phase 4.2: Auto-summarize task for logs
+            if clean_text and task_id != "agent_loop":
+                summary = summarize_task_for_memory(active_context.get("goal", "unknown"), clean_text)
+                if should_store(summary, "logs", contract_data):
+                    emit_event(s, "save_memory", {
+                        "type": "MemoryWrite",
+                        "task_id": task_id,
+                        "content": summary,
+                        "category": "logs",
+                        "tags": ["task_summary"]
+                    })
 
     except Exception as e:
         logging.error(f"Cycle Error: {e}")

@@ -1,7 +1,10 @@
 use serde_json::{json, Value};
 use std::process::Command;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::PathBuf;
+use chrono::Local;
+use rand::{distributions::Alphanumeric, Rng};
 
 pub fn execute_tool(tool_name: &str, args: &Value) -> Result<Value, String> {
     match tool_name {
@@ -34,18 +37,51 @@ pub fn execute_tool(tool_name: &str, args: &Value) -> Result<Value, String> {
         }
         "save_memory" => {
             if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
-                let vault_file = &crate::config::CONFIG.orchestrator.vault_file;
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(vault_file)
-                    .map_err(|e| format!("Failed to open {}: {}", vault_file, e))?;
+                let vault_dir = &crate::config::CONFIG.orchestrator.vault_dir;
+                let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("general");
+                let tags = args.get("tags").and_then(|v| v.as_array());
+                let confidence = args.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
                 
-                writeln!(file, "\n{}", content).map_err(|e| e.to_string())?;
+                let target_dir = PathBuf::from(vault_dir).join(category);
+                fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directory {:?}: {}", target_dir, e))?;
+                
+                let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+                let random_suffix: String = rand::thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(6)
+                    .map(char::from)
+                    .collect();
+                
+                let filename = format!("mem_{}_{}.md", timestamp, random_suffix);
+                let filepath = target_dir.join(&filename);
+                
+                let mut tags_str = String::new();
+                if let Some(t_array) = tags {
+                    let t_vec: Vec<String> = t_array.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .collect();
+                    tags_str = format!("[{}]", t_vec.join(", "));
+                }
+
+                let yaml_frontmatter = format!(
+"---
+id: mem_{}_{}
+timestamp: {}
+tags: {}
+source: auto
+confidence: {}
+---
+
+{}
+", timestamp, random_suffix, Local::now().to_rfc3339(), tags_str, confidence, content);
+
+                fs::write(&filepath, yaml_frontmatter).map_err(|e| format!("Failed to write to {:?}: {}", filepath, e))?;
                 
                 Ok(json!({
                     "status": "success",
-                    "message": "Memory saved successfully to vault_memories.md"
+                    "path": filepath.to_string_lossy(),
+                    "filename": filename
                 }))
             } else {
                 Err("Missing 'content' argument".to_string())

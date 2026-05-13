@@ -37,8 +37,13 @@ registry.register(ToolSchema(
 
 registry.register(ToolSchema(
     name="save_memory",
-    description="Save a new memory or observation about the user to the vault",
-    input_schema={"content": "string"},
-    output_schema={"status": "string"},
+    description="Save a new memory or observation about the user to the structured vault. Categorize it (preferences, procedures, facts, logs) and add relevant tags.",
+    input_schema={
+        "content": "string (the observation or fact)",
+        "category": "string (one of: preferences, procedures, facts, logs)",
+        "tags": "array of strings",
+        "confidence": "number (0.0 to 1.0)"
+    },
+    output_schema={"status": "string", "path": "string"},
     danger_tier="low"
 ))

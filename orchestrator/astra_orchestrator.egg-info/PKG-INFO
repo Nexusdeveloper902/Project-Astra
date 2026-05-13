@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: astra_orchestrator
+Version: 0.1.0
+Summary: Python cognitive layer for Project Astra
+Requires-Python: >=3.11
+Requires-Dist: faiss-cpu
+Requires-Dist: sentence-transformers
+Requires-Dist: pydantic
+Requires-Dist: requests
+Requires-Dist: numpy
+Requires-Dist: PyYAML

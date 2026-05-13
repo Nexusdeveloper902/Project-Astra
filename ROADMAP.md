@@ -616,11 +616,11 @@ TOOL_CALL_END
 
 ---
 
-## Phase 4: Memory System Maturity
+## Phase 4: Memory System Maturity [COMPLETED]
 
 > Make memory a true first-class system, not just a stub.
 
-### 4.1 Obsidian Vault Integration
+### 4.1 Obsidian Vault Integration [x]
 
 - `save_memory` currently appends to a flat `vault_memories.md` — this doesn't scale
 - Restructure: memories are saved as individual markdown files in the vault, organized by type:
@@ -646,7 +646,7 @@ User prefers Neovim over VS Code for editing configuration files.
 They use the LazyVim distribution.
 ```
 
-### 4.2 Memory Write Policy
+### 4.2 Memory Write Policy [x]
 
 - Not everything should be saved — implement the spec's write policy:
   - **Store**: stable facts, workflows, preferences
