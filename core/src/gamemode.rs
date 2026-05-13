@@ -34,7 +34,8 @@ pub fn start_watcher(event_tx: Sender<EventEnvelope>) {
 }
 
 pub fn is_game_mode_enabled() -> Option<bool> {
-    are_animations_enabled().map(|enabled| !enabled)
+    let last = LAST_STATE.lock().unwrap();
+    last.map(|enabled| !enabled)
 }
 
 fn are_animations_enabled() -> Option<bool> {

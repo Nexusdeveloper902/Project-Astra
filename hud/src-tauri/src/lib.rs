@@ -37,6 +37,9 @@ pub fn run() {
                         while let Ok(bytes) = reader.read_line(&mut line) {
                             if bytes == 0 { break; }
                             if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                                // Always emit the raw event for the frontend to handle
+                                let _ = app_handle.emit("astra-event", &event);
+
                                 if let Some(event_type) = event.get("event").and_then(|v| v.as_str()) {
                                     if event_type == "ui.output" {
                                         if let Some(data) = event.get("data") {

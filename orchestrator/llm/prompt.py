@@ -38,6 +38,11 @@ def construct_prompt(messages, active_context, memory_retrievals, tools, task_st
     # Start with the core system instruction
     prompt = [SYSTEM_CORE_INSTRUCTION]
     
+    # Format memory snippets as a clear list
+    memory_section = ""
+    if memory_retrievals:
+        memory_section = "\n[Relevant Memories]\n" + "\n".join([f"- {m}" for m in memory_retrievals])
+
     # Inject Tools and Context as a system-level update
     context_info = f"""
 <|im_start|>system
@@ -46,7 +51,7 @@ def construct_prompt(messages, active_context, memory_retrievals, tools, task_st
 
 [System Context]
 {json.dumps(active_context)}
-Memory Snippets: {", ".join(memory_retrievals)}
+{memory_section}
 Task State: {json.dumps(task_state)}
 <|im_end|>"""
     prompt.append(context_info)

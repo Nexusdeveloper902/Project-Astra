@@ -5,6 +5,7 @@ import os
 import time
 import logging
 import tomllib
+import threading
 from utils.parser import extract_tool_call, extract_text_response
 
 from llm.prompt import construct_prompt
@@ -81,8 +82,22 @@ def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loo
     # 3.1.5 Retrieving State
     emit_event(s, "task.updated", {"type": "TaskUpdated", "task_id": task_id, "status": "retrieving"})
     q_vec = embedder.embed(last_user_msg)
-    results = index.search(q_vec, k=2)
-    retrieved_texts = [r["text"] for r in results] if results else []
+    results = index.search(q_vec)
+    # 3.1.6 Limit memory snippet length to prevent prompt bloat (approx 1500 tokens)
+    MAX_MEM_CHARS = 6000
+    retrieved_texts = []
+    current_chars = 0
+    if results:
+        for r in results:
+            text = r["text"]
+            if current_chars + len(text) > MAX_MEM_CHARS:
+                # Truncate if individual chunk is huge, or just stop adding chunks
+                remaining = MAX_MEM_CHARS - current_chars
+                if remaining > 100:
+                    retrieved_texts.append(text[:remaining] + "... [truncated]")
+                break
+            retrieved_texts.append(text)
+            current_chars += len(text)
     
     emit_event(s, "memory.retrieved", {
         "type": "MemoryRetrieved",
@@ -202,8 +217,10 @@ def main():
     
     if embedder_type == "dummy":
         embedder = DummyEmbedder(dim=embedder_dim)
+    else:
+        embedder = RealEmbedder(model_name=embedder_model)
+    
     # 2. Build Memory Index
-    embedder = RealEmbedder()
     index = MemoryIndex(dim=embedder.dim)
     
     vault_dir = "/home/jperez/Astra/memories"
@@ -283,7 +300,7 @@ def main():
                         task_id = f"task_{int(time.time())}"
                         emit_event(s, "task.created", {"type": "TaskCreated", "task_id": task_id, "goal": user_text})
                         
-                        run_agent_cycle(s, messages, embedder, index, llm_client, task_id)
+                        threading.Thread(target=run_agent_cycle, args=(s, messages, embedder, index, llm_client, task_id), daemon=True).start()
                         
                     elif envelope.event == "tool.completed":
                         res_data = envelope.data.result
@@ -293,7 +310,7 @@ def main():
                         messages.append({"role": "system", "content": f"Tool completed. Result: {summary}"})
                         if len(messages) > 20: messages = messages[-20:]
                         
-                        run_agent_cycle(s, messages, embedder, index, llm_client, envelope.data.task_id)
+                        threading.Thread(target=run_agent_cycle, args=(s, messages, embedder, index, llm_client, envelope.data.task_id), daemon=True).start()
                         
                     elif envelope.event == "memory.retrieved":
                         # We just log this for observability. 
@@ -306,7 +323,7 @@ def main():
                         messages.append({"role": "system", "content": f"Tool failed: {err}"})
                         if len(messages) > 20: messages = messages[-20:]
                         
-                        run_agent_cycle(s, messages, embedder, index, llm_client, envelope.data.task_id)
+                        threading.Thread(target=run_agent_cycle, args=(s, messages, embedder, index, llm_client, envelope.data.task_id), daemon=True).start()
 
         except Exception as e:
             logging.error(f"Runtime Error: {e}")

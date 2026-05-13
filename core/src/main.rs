@@ -207,7 +207,9 @@ fn main() {
         fs::remove_file(socket_path).unwrap();
     }
 
-    let db = Db::new(db_path).expect("Failed to initialize SQLite db");
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    let db = Arc::new(Mutex::new(Db::new(db_path).expect("Failed to initialize SQLite db")));
     let mut state = SystemState::new();
     let (event_tx, event_rx): (Sender<EventEnvelope>, Receiver<EventEnvelope>) = unbounded();
 
@@ -269,10 +271,16 @@ fn main() {
     loop {
         match event_rx.recv() {
             Ok(event) => {
-                log::info!("EVENT: {} from {}", event.event, event.source);
-                if let Err(e) = db.insert_event(&event) {
-                    log::error!("Failed to log event: {}", e);
-                }
+                // Async persistence
+                let db_clone = Arc::clone(&db);
+                let event_clone = event.clone();
+                std::thread::spawn(move || {
+                    if let Ok(db_lock) = db_clone.lock() {
+                        if let Err(e) = db_lock.insert_event(&event_clone) {
+                            log::error!("Failed to log event: {}", e);
+                        }
+                    }
+                });
 
                 // Async broadcast via dedicated sender threads
                 {
@@ -325,85 +333,85 @@ fn main() {
                         let _ = loop_tx.send(conf_env);
                     } else {
                         log::info!("Executing Tool: {} for Task: {}", tool_name, task_id);
-                        match tools::runner::execute_tool(tool_name, args) {
-                            Ok(result) => {
-                                let comp_env = EventEnvelope {
-                                    schema_version: 1,
-                                    event: "tool.completed".to_string(),
-                                    timestamp: now_secs(),
-                                    source: "tool_runner".to_string(),
-                                    data: events::EventPayload::ToolResult {
-                                        task_id: task_id.clone(),
-                                        tool_name: tool_name.clone(),
-                                        result,
-                                    },
-                                };
-                                let _ = loop_tx.send(comp_env);
-                            }
-                            Err(e) => {
-                                log::error!("Tool Error: {}", e);
-                                let retryable = tool_name != "rm"; // Basic retryability logic
-                                let fail_env = EventEnvelope {
-                                    schema_version: 1,
-                                    event: "task.failed".to_string(),
-                                    timestamp: now_secs(),
-                                    source: "tool_runner".to_string(),
-                                    data: events::EventPayload::TaskFailed {
-                                        task_id: task_id.clone(),
-                                        error: e.to_string(),
-                                        retryable,
-                                    },
-                                };
-                                let _ = loop_tx.send(fail_env);
-
-                                if retryable {
-                                    if let Some(task) = state.tasks.get_mut(task_id) {
-                                        if task.retry_count < task.max_retries {
-                                            task.retry_count += 1;
-                                            log::info!("Retrying tool {} (attempt {})", tool_name, task.retry_count);
-                                            // Re-request tool after short delay (simulated here by re-sending)
-                                            let _ = loop_tx.send(event.clone());
-                                        }
-                                    }
+                        let tool_name = tool_name.clone();
+                        let args = args.clone();
+                        let task_id = task_id.clone();
+                        let loop_tx = loop_tx.clone();
+                        
+                        std::thread::spawn(move || {
+                            match tools::runner::execute_tool(&tool_name, &args) {
+                                Ok(result) => {
+                                    let comp_env = EventEnvelope {
+                                        schema_version: 1,
+                                        event: "tool.completed".to_string(),
+                                        timestamp: now_secs(),
+                                        source: "tool_runner".to_string(),
+                                        data: events::EventPayload::ToolResult {
+                                            task_id,
+                                            tool_name,
+                                            result,
+                                        },
+                                    };
+                                    let _ = loop_tx.send(comp_env);
+                                }
+                                Err(e) => {
+                                    log::error!("Tool Error: {}", e);
+                                    let fail_env = EventEnvelope {
+                                        schema_version: 1,
+                                        event: "tool.rejected".to_string(),
+                                        timestamp: now_secs(),
+                                        source: "tool_runner".to_string(),
+                                        data: events::EventPayload::ToolRejected {
+                                            task_id,
+                                            tool_name,
+                                            reason: e,
+                                        },
+                                    };
+                                    let _ = loop_tx.send(fail_env);
                                 }
                             }
-                        }
+                        });
                     }
                 }
 
                 if let events::EventPayload::ToolConfirmed { pending_id, .. } = &event.data {
                     if let Some(pending) = state.pending_executions.get(pending_id) {
                         log::info!("Executing Confirmed Tool: {} for Task: {}", pending.tool_name, pending.task_id);
-                        match tools::runner::execute_tool(&pending.tool_name, &pending.args) {
-                            Ok(result) => {
-                                let comp_env = EventEnvelope {
-                                    schema_version: 1,
-                                    event: "tool.completed".to_string(),
-                                    timestamp: now_secs(),
-                                    source: "tool_runner".to_string(),
-                                    data: events::EventPayload::ToolResult {
-                                        task_id: pending.task_id.clone(),
-                                        tool_name: pending.tool_name.clone(),
-                                        result,
-                                    },
-                                };
-                                let _ = loop_tx.send(comp_env);
+                        let pending = pending.clone();
+                        let loop_tx = loop_tx.clone();
+                        
+                        std::thread::spawn(move || {
+                            match tools::runner::execute_tool(&pending.tool_name, &pending.args) {
+                                Ok(result) => {
+                                    let comp_env = EventEnvelope {
+                                        schema_version: 1,
+                                        event: "tool.completed".to_string(),
+                                        timestamp: now_secs(),
+                                        source: "tool_runner".to_string(),
+                                        data: events::EventPayload::ToolResult {
+                                            task_id: pending.task_id.clone(),
+                                            tool_name: pending.tool_name.clone(),
+                                            result,
+                                        },
+                                    };
+                                    let _ = loop_tx.send(comp_env);
+                                }
+                                Err(e) => {
+                                    let fail_env = EventEnvelope {
+                                        schema_version: 1,
+                                        event: "task.failed".to_string(),
+                                        timestamp: now_secs(),
+                                        source: "tool_runner".to_string(),
+                                        data: events::EventPayload::TaskFailed {
+                                            task_id: pending.task_id.clone(),
+                                            error: e.to_string(),
+                                            retryable: false,
+                                        },
+                                    };
+                                    let _ = loop_tx.send(fail_env);
+                                }
                             }
-                            Err(e) => {
-                                let fail_env = EventEnvelope {
-                                    schema_version: 1,
-                                    event: "task.failed".to_string(),
-                                    timestamp: now_secs(),
-                                    source: "tool_runner".to_string(),
-                                    data: events::EventPayload::TaskFailed {
-                                        task_id: pending.task_id.clone(),
-                                        error: e.to_string(),
-                                        retryable: false,
-                                    },
-                                };
-                                let _ = loop_tx.send(fail_env);
-                            }
-                        }
+                        });
                     }
                 }
 
@@ -426,7 +434,7 @@ fn main() {
                 }
 
                 if let events::EventPayload::SystemSuspend { .. } = &event.data {
-                    stop_heavy_components();
+                    std::thread::spawn(|| stop_heavy_components());
                     // Interrupt all active tasks
                     for (task_id, task) in state.tasks.iter_mut() {
                         if task.status == "executing" || task.status == "planning" {
@@ -444,7 +452,7 @@ fn main() {
                         }
                     }
                 } else if let events::EventPayload::SystemResume {} = &event.data {
-                    start_heavy_components();
+                    std::thread::spawn(|| start_heavy_components());
                     // Resume interrupted tasks
                     for (task_id, task) in state.tasks.iter_mut() {
                         if task.status == "interrupted" && task.interrupt_reason.as_deref() == Some("system_suspend") {
