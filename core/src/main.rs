@@ -98,14 +98,17 @@ fn start_heavy_components() {
 
 fn handle_client(mut stream: UnixStream, event_sender: Sender<EventEnvelope>) {
     let mut buffer = [0; 4096];
+    let mut read_buffer = String::new();
     loop {
         match stream.read(&mut buffer) {
             Ok(size) => {
                 if size == 0 {
                     break;
                 }
-                let req_str = String::from_utf8_lossy(&buffer[..size]);
-                for line in req_str.lines() {
+                read_buffer.push_str(&String::from_utf8_lossy(&buffer[..size]));
+                while let Some(newline_idx) = read_buffer.find('\n') {
+                    let line: String = read_buffer.drain(..=newline_idx).collect();
+                    let line = line.trim();
                     if line.trim().is_empty() {
                         continue;
                     }

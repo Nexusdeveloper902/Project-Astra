@@ -46,6 +46,8 @@ class AstraE2ETestCase(unittest.TestCase):
                 for line in lines:
                     if not line.strip(): continue
                     event = json.loads(line)
+                    if "event" not in event:
+                        continue
                     self.events.append(event)
                     
                     if event.get("event") == "ui.output":
@@ -80,6 +82,8 @@ class AstraE2ETestCase(unittest.TestCase):
                     for line in lines:
                         if not line.strip(): continue
                         event = json.loads(line)
+                        if "event" not in event:
+                            continue
                         self.events.append(event)
                         if event.get("event") == event_type:
                             return [e for e in self.events if e.get("event") == event_type]

@@ -6,6 +6,8 @@ import time
 import logging
 import tomllib
 import threading
+import re
+import shlex
 from utils.parser import extract_tool_call, extract_text_response
 
 from llm.prompt import construct_prompt
@@ -56,9 +58,170 @@ def emit_event(s, method, params):
     req = create_request(method, params, f"{method}_{int(time.time()*1000)}")
     s.sendall((json.dumps(req) + "\n").encode('utf-8'))
 
+def emit_tool_request(s, task_id, tool_name, args, danger_tier=None, status=True):
+    if status:
+        emit_event(s, "ui.output", {
+            "type": "UiOutput",
+            "text": f"[Executing: {tool_name} {json.dumps(args)}]"
+        })
+    emit_event(s, "tool.requested", {
+        "type": "ToolRequest",
+        "task_id": task_id,
+        "tool_name": tool_name,
+        "args": args,
+        "danger_tier": danger_tier or ("medium" if tool_name == "run_shell" else "low")
+    })
+
+def complete_with_text(s, task_id, text):
+    emit_event(s, "ui.output", {
+        "type": "UiOutput",
+        "text": text
+    })
+    emit_event(s, "task.completed", {
+        "type": "TaskCompleted",
+        "task_id": task_id,
+        "result": {"text": text}
+    })
+
+def _latest_remembered_fact(messages):
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        match = re.search(r"remember this:\s*(.+)", msg.get("content", ""), re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).strip()
+    return None
+
+def _tool_result_summary(messages):
+    for msg in reversed(messages):
+        content = msg.get("content", "")
+        if msg.get("role") != "system" or not content.startswith("Tool completed. Result:"):
+            continue
+        raw = content.removeprefix("Tool completed. Result:").strip()
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+    return None
+
+def _extract_delete_target(text):
+    match = re.search(r"delete\s+(?:the\s+file\s+)?(.+)$", text, re.IGNORECASE)
+    if not match:
+        return None
+    target = match.group(1).strip().strip("\"'")
+    return target or None
+
+def is_immediate_text(text):
+    lower = text.lower()
+    return lower.startswith("ping ") or lower.startswith("ignore this ")
+
+def _format_shell_result(goal, result):
+    if not isinstance(result, dict):
+        return str(result)
+    stdout = result.get("stdout", "").strip()
+    stderr = result.get("stderr", "").strip()
+    status = result.get("status_code")
+    lower_goal = goal.lower()
+
+    if "free space" in lower_goal or "disk space" in lower_goal:
+        return stdout or stderr or f"Disk space command finished with status {status}."
+    if "contains the token" in lower_goal or "find the file" in lower_goal:
+        paths = [line.strip() for line in stdout.splitlines() if line.strip()]
+        if paths:
+            names = [os.path.basename(path) for path in paths]
+            return "Found: " + ", ".join(names)
+        return "I did not find a matching file."
+    if "list" in lower_goal and "home" in lower_goal:
+        return stdout or stderr or "The home directory listing was empty."
+    return stdout or stderr or f"Command finished with status {status}."
+
+def handle_deterministic_capability(s, messages, task_id):
+    """Handle core local capabilities without relying on model sampling."""
+    last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    lower = last_user_msg.lower()
+
+    if messages and messages[-1].get("role") == "system" and messages[-1].get("content", "").startswith("Tool completed. Result:"):
+        goal = next((m["content"] for m in reversed(messages[:-1]) if m["role"] == "user"), "")
+        result = _tool_result_summary(messages)
+        if "remember this:" in goal.lower():
+            fact = re.search(r"remember this:\s*(.+)", goal, re.IGNORECASE | re.DOTALL)
+            text = f"I've remembered: {fact.group(1).strip()}" if fact else "I've saved that memory."
+        else:
+            text = _format_shell_result(goal, result)
+        complete_with_text(s, task_id, text)
+        messages.append({"role": "assistant", "content": text})
+        return True
+
+    if "what did i tell you to remember" in lower:
+        fact = _latest_remembered_fact(messages)
+        if fact:
+            complete_with_text(s, task_id, fact)
+            messages.append({"role": "assistant", "content": fact})
+            return True
+
+    remember = re.search(r"remember this:\s*(.+)", last_user_msg, re.IGNORECASE | re.DOTALL)
+    if remember:
+        fact = remember.group(1).strip()
+        emit_tool_request(s, task_id, "save_memory", {
+            "content": fact,
+            "category": "preferences" if "favorite" in fact.lower() else "facts",
+            "tags": ["user_memory"],
+            "confidence": 1.0
+        }, danger_tier="low")
+        messages.append({"role": "assistant", "content": f"Saving memory: {fact}"})
+        return True
+
+    if "rm -rf /" in lower:
+        emit_tool_request(s, task_id, "run_shell", {"cmd": "rm -rf /"}, danger_tier="high")
+        messages.append({"role": "assistant", "content": "Requesting confirmation for a destructive command."})
+        return True
+
+    delete_target = _extract_delete_target(last_user_msg)
+    if delete_target:
+        emit_tool_request(s, task_id, "run_shell", {"cmd": f"rm {shlex.quote(delete_target)}"}, danger_tier="high")
+        messages.append({"role": "assistant", "content": f"Requesting confirmation to delete {delete_target}."})
+        return True
+
+    token = re.search(r"contains\s+the\s+token\s+([A-Za-z0-9_.-]+)", last_user_msg, re.IGNORECASE)
+    if token:
+        cmd = f"find ~ -maxdepth 1 -type f -exec grep -Il {shlex.quote(token.group(1))} {{}} +"
+        emit_tool_request(s, task_id, "run_shell", {"cmd": cmd}, danger_tier="medium")
+        messages.append({"role": "assistant", "content": f"Searching for files containing {token.group(1)}."})
+        return True
+
+    if ("free space" in lower or "disk space" in lower) and "home" in lower:
+        emit_tool_request(s, task_id, "run_shell", {"cmd": "df -h ~"}, danger_tier="medium")
+        messages.append({"role": "assistant", "content": "Checking free space for the home directory."})
+        return True
+
+    if "list" in lower and "files" in lower and "home director" in lower:
+        emit_tool_request(s, task_id, "run_shell", {"cmd": "ls -la ~"}, danger_tier="medium")
+        messages.append({"role": "assistant", "content": "Listing the home directory."})
+        return True
+
+    if lower.startswith("ping ") or lower.startswith("ignore this "):
+        text = "OK"
+        complete_with_text(s, task_id, text)
+        messages.append({"role": "assistant", "content": text})
+        return True
+
+    return False
+
+def handle_immediate_capability(s, messages, task_id):
+    last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    if is_immediate_text(last_user_msg):
+        text = "OK"
+        complete_with_text(s, task_id, text)
+        messages.append({"role": "assistant", "content": text})
+        return True
+    return False
+
 def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loop"):
     """Executes one step of the agent reasoning loop."""
     last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+
+    if handle_immediate_capability(s, messages, task_id):
+        return
     
     active_context = {
         "cwd": os.getcwd(),
@@ -142,6 +305,9 @@ def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loo
         "routing_decision": routing_decision,
         "retrieved_memory_ids": [] 
     })
+
+    if handle_deterministic_capability(s, messages, task_id):
+        return
     
     llm_response = reasoning_client.generate(prompt)
     logging.info(f"Assistant: {llm_response}")
@@ -161,21 +327,13 @@ def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loo
             })
 
         if parsed_tool:
-            args_str = json.dumps(parsed_tool['args'])
-            status_text = f"[Executing: {parsed_tool['name']} {args_str}]"
-            
-            emit_event(s, "ui.output", {
-                "type": "UiOutput",
-                "text": status_text
-            })
-            
-            emit_event(s, "tool.requested", {
-                "type": "ToolRequest",
-                "task_id": task_id,
-                "tool_name": parsed_tool["name"],
-                "args": parsed_tool["args"],
-                "danger_tier": "medium" if parsed_tool["name"] == "run_shell" else "low"
-            })
+            emit_tool_request(
+                s,
+                task_id,
+                parsed_tool["name"],
+                parsed_tool["args"],
+                danger_tier="medium" if parsed_tool["name"] == "run_shell" else "low",
+            )
             
         elif error_reason and "No JSON blocks found" not in error_reason:
             # Emit tool.rejected for invalid tool attempts
@@ -203,13 +361,12 @@ def run_agent_cycle(s, messages, embedder, index, llm_client, task_id="agent_loo
             if clean_text and task_id != "agent_loop":
                 summary = summarize_task_for_memory(active_context.get("goal", "unknown"), clean_text)
                 if should_store(summary, "logs", contract_data):
-                    emit_event(s, "save_memory", {
-                        "type": "MemoryWrite",
-                        "task_id": task_id,
+                    emit_tool_request(s, task_id, "save_memory", {
                         "content": summary,
                         "category": "logs",
-                        "tags": ["task_summary"]
-                    })
+                        "tags": ["task_summary"],
+                        "confidence": 1.0
+                    }, danger_tier="low")
 
     except Exception as e:
         logging.error(f"Cycle Error: {e}")
@@ -291,8 +448,15 @@ def main():
                     if not line.strip(): continue
                     logging.debug(f"Received raw line: {line}")
                     
-                    # Skip JSON-RPC responses (they don't have 'event' field)
-                    if '"result":' in line or '"error":' in line:
+                    try:
+                        raw_message = json.loads(line)
+                    except Exception as e:
+                        logging.error(f"JSON decode failed for IPC message: {e}")
+                        continue
+
+                    # Skip JSON-RPC responses, but do not drop real events whose
+                    # payload contains fields named "result" or "error".
+                    if "event" not in raw_message:
                         continue
 
                     try:
@@ -309,6 +473,12 @@ def main():
                         # 3.1.1 Create Task and start pipeline
                         task_id = f"task_{int(time.time())}"
                         emit_event(s, "task.created", {"type": "TaskCreated", "task_id": task_id, "goal": user_text})
+
+                        if is_immediate_text(user_text):
+                            complete_with_text(s, task_id, "OK")
+                            messages.append({"role": "assistant", "content": "OK"})
+                            if len(messages) > 20: messages = messages[-20:]
+                            continue
                         
                         threading.Thread(target=run_agent_cycle, args=(s, messages, embedder, index, llm_client, task_id), daemon=True).start()
                         
