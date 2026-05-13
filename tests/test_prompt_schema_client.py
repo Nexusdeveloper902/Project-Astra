@@ -27,7 +27,9 @@ class TestPromptConstruction(unittest.TestCase):
         self.assertTrue(prompt.startswith(SYSTEM_CORE_INSTRUCTION))
         self.assertIn("[Available Tools]", prompt)
         self.assertIn('"cwd": "/tmp/astra"', prompt)
-        self.assertIn("Memory Snippets: remember this, and that", prompt)
+        self.assertIn("[Relevant Memories]", prompt)
+        self.assertIn("- remember this", prompt)
+        self.assertIn("- and that", prompt)
         self.assertIn('"status": "processing"', prompt)
         self.assertTrue(prompt.endswith("<|im_start|>assistant"))
 
