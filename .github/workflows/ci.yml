@@ -1,0 +1,42 @@
+name: Astra CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  rust-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - name: Run Core Tests
+        run: cd core && cargo test
+
+  python-orchestrator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          cd orchestrator
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install numpy faiss-cpu sentence-transformers pydantic
+      - name: Run Orchestrator Unit Tests
+        run: |
+          # Use the helper to run tests without live core/faiss
+          python -m unittest tests.test_memory_components tests.test_prompt_schema_client tests.test_agent_cycle
+
+  # Note: E2E and Capability tests are skipped in CI as they require a live LLM server

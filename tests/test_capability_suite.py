@@ -124,5 +124,24 @@ class TestCapabilitySuite(AstraE2ETestCase):
         
         self.assertIn(fact, resp, "Astra failed to retrieve the stored memory.")
 
+    def test_ipc_concurrency_and_stalling(self):
+        """
+        Verify that the IPC layer does not hang when multiple messages are sent
+        rapidly or when a large payload is transmitted.
+        """
+        # 1. Stress test: Rapid fire small messages
+        for i in range(5):
+            self.send_prompt(f"Ping {i}")
+        
+        # We should eventually get responses for all or at least the last one
+        resp = self.wait_for_response()
+        self.assertTrue(len(resp) > 0, "System failed to respond after rapid-fire IPC messages.")
+        
+        # 2. Payload test: Send a very large message
+        large_msg = "ignore this " * 1000 # ~12KB
+        self.send_prompt(large_msg)
+        resp = self.wait_for_response()
+        self.assertTrue(len(resp) > 0, "System hung on large IPC payload.")
+
 if __name__ == "__main__":
     unittest.main()
